@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# scraped/derived data and trained models — large, reproducible, and
+# possibly ToS-sensitive to redistribute. Ignore everything under data/
+# except the placeholder .gitkeep files that keep the directory structure.
+data/*
+!data/.gitkeep
+!data/raw/
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/html/
+data/raw/html/*
+!data/raw/html/.gitkeep
+!data/processed/
+data/processed/*
+!data/processed/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+
+# models
+*.pkl
+*.joblib
+*.txt.lgb
+map_model.txt
+
+.env
+.DS_Store

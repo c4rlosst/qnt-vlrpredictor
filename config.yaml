@@ -1,0 +1,43 @@
+# cspredictor configuration
+
+database:
+  path: "data/cspredictor.db"
+
+scraping:
+  base_url: "https://www.hltv.org"
+  # seconds between requests (a random jitter of +/- 40% is added on top of this)
+  min_delay_seconds: 4.0
+  max_delay_seconds: 7.0
+  # retry/backoff on 403/429/5xx
+  max_retries: 5
+  backoff_base_seconds: 10.0
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+  cache_dir: "data/raw/html"
+  # respect a hard cap per run so an interrupted/misconfigured job can't hammer the site
+  max_requests_per_run: 2000
+
+backfill:
+  # default history window for the full backfill (see README for how to run it)
+  months_back: 24
+
+features:
+  elo:
+    initial_rating: 1500.0
+    k_factor: 32.0
+    map_k_factor: 24.0
+  rolling_windows: [5, 10, 20]
+  recent_days_congestion: 14
+
+model:
+  lightgbm_params:
+    objective: "binary"
+    metric: "binary_logloss"
+    learning_rate: 0.05
+    num_leaves: 31
+    min_data_in_leaf: 20
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    verbose: -1
+  num_boost_round: 500
+  early_stopping_rounds: 30
