@@ -1,4 +1,4 @@
-from cspredictor.features.elo import EloTracker, MapEloTracker, expected_score
+from valpredictor.features.elo import EloTracker, MapEloTracker, expected_score
 
 
 def test_expected_score_symmetry():
@@ -47,6 +47,17 @@ def test_upset_moves_rating_more_than_expected_win():
     gain_upset = new2_b - 1200.0
 
     assert gain_upset > gain_expected_win > 0
+
+
+def test_regress_pulls_rating_toward_the_start():
+    tracker = EloTracker(initial_rating=1500.0)
+    tracker._ratings[1] = 1700.0
+    tracker._ratings[2] = 1300.0
+    assert tracker.regress(1, 0.25) == 1650.0
+    assert tracker.regress(2, 0.5) == 1400.0
+    assert tracker.regress(1, 0.0) == 1650.0   # no change
+    assert tracker.regress(1, 5.0) == 1500.0   # clamped to a full reset
+    assert tracker.regress(99, 0.5) == 1500.0  # unseen team stays at the start
 
 
 def test_map_elo_tracks_independently_per_map():

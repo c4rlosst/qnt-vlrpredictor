@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from cspredictor.models.combinatorics import (
+from valpredictor.models.combinatorics import (
     combine_win_rates,
     expected_map_probs_from_pool,
     match_win_probability,

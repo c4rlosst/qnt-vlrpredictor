@@ -1,15 +1,10 @@
-"""Rate-limited, disk-cached HTTP client for fetching HLTV pages.
+"""Rate-limited, disk-cached HTTP client for fetching vlr.gg pages.
 
-Design goals (see README for the full rationale):
-  - Never re-fetch a URL we already have on disk.
+  - Never re-fetch a URL already on disk (unless force_refresh=True).
   - Never hammer the server: a randomized delay between every live request,
-    plus exponential backoff on 403/429/5xx, plus a hard cap on requests/run.
-  - Swappable fetch backend: cloudscraper (handles Cloudflare's JS challenge)
-    is tried first; a plain `requests` session is a fallback for pages that
-    don't need it. If both are blocked in a given environment, pages can be
-    dropped into the cache directory by hand (e.g. saved from a real browser)
-    using the same filename scheme `cache_key_for_url` produces, and this
-    client will pick them up as a cache hit with no code changes.
+    exponential backoff on 403/429/5xx, and a hard cap on requests per run.
+  - vlr.gg's robots.txt only disallows /search/auto and /rr/; this client
+    never touches either.
 """
 
 from __future__ import annotations
@@ -19,16 +14,10 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import requests
 
-try:
-    import cloudscraper
-except ImportError:  # pragma: no cover - optional dependency at runtime
-    cloudscraper = None
-
-from cspredictor.config import load_config, resolve_path
+from valpredictor.config import load_config, resolve_path
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +37,8 @@ class ClientStats:
     cache_hits: int = 0
 
 
-class HLTVClient:
-    """Fetches HLTV pages with disk caching and conservative rate limiting."""
+class VLRClient:
+    """Fetches vlr.gg pages with disk caching and conservative rate limiting."""
 
     def __init__(self, config: dict | None = None):
         cfg = (config or load_config())["scraping"]
@@ -68,13 +57,6 @@ class HLTVClient:
         self._session = self._build_session()
 
     def _build_session(self):
-        if cloudscraper is not None:
-            try:
-                return cloudscraper.create_scraper(
-                    browser={"browser": "chrome", "platform": "windows", "mobile": False}
-                )
-            except Exception:  # pragma: no cover - defensive
-                logger.warning("cloudscraper session init failed, falling back to requests")
         session = requests.Session()
         session.headers.update({"User-Agent": self.user_agent})
         return session
@@ -87,6 +69,9 @@ class HLTVClient:
             if remaining > 0:
                 time.sleep(remaining)
         self._last_request_ts = time.monotonic()
+
+    def has_cached(self, path_or_url: str) -> bool:
+        return (self.cache_dir / cache_key_for_url(self.full_url(path_or_url))).exists()
 
     def full_url(self, path_or_url: str) -> str:
         if path_or_url.startswith("http"):

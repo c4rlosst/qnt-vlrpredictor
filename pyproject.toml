@@ -1,10 +1,9 @@
 [project]
-name = "cspredictor"
+name = "valpredictor"
 version = "0.1.0"
-description = "ML pipeline to predict CS2 match winners and map scores from HLTV data"
+description = "ML pipeline to predict Valorant match winners and map scores from vlr.gg data"
 requires-python = ">=3.11"
 dependencies = [
-    "cloudscraper>=1.2.71",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
     "requests>=2.31",
@@ -24,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-cspredictor = "cspredictor.cli:cli"
+valpredictor = "valpredictor.cli:cli"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -32,3 +31,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+valpredictor = ["web/*.html", "storage/*.sql"]

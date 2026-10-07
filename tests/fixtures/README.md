@@ -14,7 +14,7 @@ selectors match HLTV's actual current markup. Before trusting scraped data:
 2. Run `python scripts/inspect_parse.py <path-or-url> results|match|ranking`
    to see what the parser extracts from it.
 3. If fields come back `None` that shouldn't, fix the selector in
-   `src/cspredictor/scraping/parsers.py` and re-run step 2 until it looks
+   `src/valpredictor/scraping/parsers.py` and re-run step 2 until it looks
    right. Ideally, also replace these synthetic fixtures with the real saved
    HTML (trimmed to the relevant section) so this test suite starts
    verifying against ground truth.

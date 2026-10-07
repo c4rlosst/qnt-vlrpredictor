@@ -2,12 +2,41 @@ import datetime as dt
 
 import pytest
 
-from cspredictor.features.rolling import (
+from valpredictor.features.rolling import (
     FormTracker,
     H2HTracker,
     RestAndCongestionTracker,
     RosterTracker,
+    SideTracker,
+    side_rounds,
 )
+
+
+def test_side_rounds_regulation_and_early_finish():
+    assert side_rounds(13, 11, "def") == (12, 12, 12, 12)  # 24 rounds: 12 on each side
+    assert side_rounds(13, 7, "def") == (8, 12, 12, 8)     # 20 rounds: only 8 after the swap
+    assert side_rounds(13, 7, "atk") == (12, 8, 8, 12)
+    assert side_rounds(15, 13, "atk") == (12, 12, 12, 12)  # overtime rounds are ignored
+
+
+def test_side_tracker_rejects_inconsistent_counts():
+    st = SideTracker()
+    # NRG-T1 Lotus: NRG started defence (5 def / 8 atk), T1 started attack (7 atk / 4 def)
+    assert st.update(1, 2, "Lotus", 13, 11, t1_atk_won=8, t1_def_won=5, t2_atk_won=7, t2_def_won=4, team1_first_side="def")
+    assert not st.update(1, 2, "Lotus", 13, 11, t1_atk_won=9, t1_def_won=5, t2_atk_won=7, t2_def_won=4, team1_first_side="def")
+
+
+def test_side_tracker_edges_and_map_bias():
+    st = SideTracker(prior_rounds=48.0)
+    assert st.edges(1) == (0.0, 0.0)          # unseen team = league average
+    assert st.league_atk_rate == 0.5
+    st.update(1, 2, "Lotus", 13, 11, 8, 5, 7, 4, "def")
+    assert st.league_atk_rate == pytest.approx(15 / 24)
+    atk, dfn = st.edges(1)
+    assert atk == pytest.approx((8 + 48 * 15 / 24) / 60 - 15 / 24)   # shrunk toward the league rate
+    assert dfn == pytest.approx((5 + 48 * 9 / 24) / 60 - 9 / 24)
+    assert st.map_atk_bias("Lotus") > 0 > st.map_atk_bias("Lotus") - 0.2   # attack-friendly so far
+    assert st.map_atk_bias("Haven") == pytest.approx(15 / 24 - 0.5)        # unseen map falls back to the league
 
 
 def test_form_tracker_no_history_is_none():
@@ -83,6 +112,26 @@ def test_rest_and_congestion_after_updates():
     current = dt.date(2026, 1, 10)
     assert tracker.rest_days(1, current) == 5  # since last match on Jan 5
     assert tracker.congestion(1, current) == 2  # both prior matches within 14 days
+
+
+def test_roster_continuity_and_players_changed():
+    rt = RosterTracker(history=3)
+    core = frozenset({1, 2, 3, 4, 5})
+    assert rt.continuity(10, core) is None  # no history yet
+    assert rt.players_changed(10, core) is None
+    for day in (1, 2, 3):
+        rt.update(10, core, dt.date(2026, 1, day))
+    assert rt.continuity(10, core) == pytest.approx(1.0)
+    assert rt.players_changed(10, core) == 0
+
+    rebuilt = frozenset({1, 2, 3, 6, 7})  # two new players
+    assert rt.players_changed(10, rebuilt) == 2
+    assert rt.continuity(10, rebuilt) == pytest.approx(3 / 5)
+
+    for day in (4, 5, 6):  # the new lineup plays enough that history is all new
+        rt.update(10, rebuilt, dt.date(2026, 1, day))
+    assert rt.continuity(10, rebuilt) == pytest.approx(1.0)
+    assert rt.continuity(10, core) == pytest.approx(3 / 5)
 
 
 def test_roster_tracker_first_sighting_is_unknown():

@@ -1,11 +1,11 @@
 """Generates a synthetic match history into its own SQLite DB, purely to
 smoke-test the feature/model/backtest/predict pipeline end-to-end.
 
-THIS IS NOT REAL HLTV DATA. It exists because this dev environment can't
-reach hltv.org — see README "Verifying the scraper" for how to get real data.
+THIS IS NOT REAL VALORANT DATA. It exists so the feature/model/backtest/web-UI
+pipeline can be smoke-tested without scraping anything.
 It simulates teams with a fixed hidden skill + per-map affinity via a
 Bradley-Terry win model, so a correctly-implemented pipeline should be able
-to recover signal from it and beat the naive-rank / elo-only baselines.
+to recover signal from it and beat the naive-form / elo-only baselines.
 
 Usage:
     python scripts/generate_synthetic_data.py --out data/synthetic_demo.db
@@ -23,9 +23,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cspredictor.storage import db  # noqa: E402
+from valpredictor.storage import db  # noqa: E402
 
-MAPS = ["Mirage", "Inferno", "Nuke", "Ancient", "Anubis", "Overpass", "Vertigo"]
+MAPS = ["Ascent", "Bind", "Haven", "Lotus", "Split", "Sunset", "Abyss"]
 
 
 def simulate(out_path: Path, n_teams: int, n_weeks: int, seed: int) -> None:
@@ -38,32 +38,27 @@ def simulate(out_path: Path, n_teams: int, n_weeks: int, seed: int) -> None:
         skill = rng.gauss(0, 1.0)
         map_affinity = {m: rng.gauss(0, 0.4) for m in MAPS}
         players = [f"team{i}_player{j}" for j in range(5)]
-        team_id = db.upsert_team(conn, f"Synthetic Team {i}", hltv_id=1000 + i)
+        team_id = db.upsert_team(conn, f"Synthetic Team {i}", vlr_id=1000 + i)
         teams.append({"id": team_id, "skill": skill, "affinity": map_affinity, "players": players})
 
-    event_id = db.upsert_event(conn, "Synthetic League", hltv_id=9000, is_lan=False)
+    event_id = db.upsert_event(conn, "Synthetic League", vlr_id=9000, is_international=False)
 
     start = dt.date.today() - dt.timedelta(weeks=n_weeks)
-    match_hltv_id = 1
+    match_vlr_id = 1
     for week in range(n_weeks):
         match_date = start + dt.timedelta(weeks=week)
-
-        # weekly ranking snapshot, ranked by current skill + noise
-        ranked = sorted(teams, key=lambda t: -(t["skill"] + rng.gauss(0, 0.15)))
-        for rank, t in enumerate(ranked, start=1):
-            db.upsert_ranking_snapshot(conn, t["id"], match_date, rank=rank, points=max(0, 1000 - rank * 20))
 
         # a handful of random pairings per week
         pool = teams[:]
         rng.shuffle(pool)
         for a, b in zip(pool[::2], pool[1::2]):
             best_of = rng.choice([1, 3, 3, 3])  # mostly Bo3, some Bo1
-            match_hltv_id += 1
+            match_vlr_id += 1
             match_id = db.upsert_match(
-                conn, hltv_id=match_hltv_id, match_url=f"/matches/{match_hltv_id}/synthetic",
+                conn, vlr_id=match_vlr_id, match_url=f"/matches/{match_vlr_id}/synthetic",
                 event_id=event_id, unix_timestamp_ms=int(dt.datetime.combine(match_date, dt.time()).timestamp() * 1000),
                 team1_id=a["id"], team2_id=b["id"], best_of=best_of,
-                team1_score=None, team2_score=None, is_lan=rng.random() < 0.2,
+                team1_score=None, team2_score=None, is_international=rng.random() < 0.2,
             )
 
             picked_maps = rng.sample(MAPS, k=best_of)

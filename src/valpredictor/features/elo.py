@@ -36,6 +36,15 @@ class EloTracker:
         self._ratings[team_b] = new_b
         return new_a, new_b
 
+    def regress(self, team_id: int, fraction: float) -> float:
+        """Pull a team's rating `fraction` (0..1) of the way back to the
+        starting rating — used when its lineup changed, since past results
+        were earned by different players."""
+        fraction = min(max(fraction, 0.0), 1.0)
+        r = self.rating(team_id)
+        self._ratings[team_id] = r + (self.initial_rating - r) * fraction
+        return self._ratings[team_id]
+
 
 class MapEloTracker:
     """Same idea as EloTracker but keyed on (team_id, map_name)."""

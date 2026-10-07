@@ -1,73 +1,46 @@
-"""Fetches (or re-reads from cache) a page and pretty-prints what the parser
-extracted, so you can eyeball it next to the real page in a browser and fix
-any selector in src/cspredictor/scraping/parsers.py that's drifted from
-HLTV's current markup.
+"""Fetch (or re-read from cache) a vlr.gg page and pretty-print what the parser
+extracted, to spot a drifted selector in src/valpredictor/scraping/parsers.py.
 
-    python scripts/inspect_parse.py https://www.hltv.org/results results
-    python scripts/inspect_parse.py https://www.hltv.org/matches/12345/slug match
-    python scripts/inspect_parse.py https://www.hltv.org/ranking/teams/2026/january/5 ranking
+    python scripts/inspect_parse.py /matches/results results      # results or schedule list
+    python scripts/inspect_parse.py /matches results
+    python scripts/inspect_parse.py /754732/nrg-vs-t1-valorant-champions-2026-ubqf match
 
-You can also point it at a local HTML file instead of a URL:
+A local HTML file path works too:
 
-    python scripts/inspect_parse.py data/raw/html/<hash>.html match --match-id 12345
+    python scripts/inspect_parse.py tests/fixtures/match_detail.html match
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cspredictor.scraping.client import HLTVClient  # noqa: E402
-from cspredictor.scraping.parsers import (  # noqa: E402
-    parse_match_detail,
-    parse_rankings_page,
-    parse_results_page,
-)
-
-
-def _load_html(source: str) -> str:
-    local = Path(source)
-    if local.exists():
-        return local.read_text(encoding="utf-8")
-    return HLTVClient().get(source)
+from valpredictor.scraping.client import VLRClient  # noqa: E402
+from valpredictor.scraping.parsers import parse_match_detail, parse_results_page  # noqa: E402
 
 
 def main():
-    if len(sys.argv) < 3:
+    if len(sys.argv) != 3 or sys.argv[2] not in ("results", "match"):
         print(__doc__)
         raise SystemExit(1)
     source, page_type = sys.argv[1], sys.argv[2]
-    html = _load_html(source)
+    local = Path(source)
+    html = local.read_text(encoding="utf-8") if local.exists() else VLRClient().get(source)
 
     if page_type == "results":
         rows = parse_results_page(html)
-        print(f"parsed {len(rows)} result rows\n")
-        for r in rows[:10]:
-            print(asdict(r))
-        if len(rows) > 10:
-            print(f"... and {len(rows) - 10} more")
-
-    elif page_type == "match":
-        match_id = 0
-        if "--match-id" in sys.argv:
-            match_id = int(sys.argv[sys.argv.index("--match-id") + 1])
-        detail = parse_match_detail(html, hltv_match_id=match_id)
-        d = asdict(detail)
-        for k, v in d.items():
-            print(f"{k}: {v}")
-
-    elif page_type == "ranking":
-        rows = parse_rankings_page(html)
-        print(f"parsed {len(rows)} ranking rows\n")
+        print(f"parsed {len(rows)} rows\n")
         for r in rows[:15]:
             print(asdict(r))
-
     else:
-        print(f"unknown page type {page_type!r} (expected results|match|ranking)")
-        raise SystemExit(1)
+        m = re.match(r"^/?(\d+)/", source)
+        detail = parse_match_detail(html, int(m.group(1)) if m else 0)
+        for key, value in asdict(detail).items():
+            print(f"{key}: {value}")
 
 
 if __name__ == "__main__":

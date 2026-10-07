@@ -1,99 +1,160 @@
-"""Tests the parser's traversal/typing logic against hand-written fixture
-HTML (see fixtures/README.md) — NOT verified against real hltv.org markup,
-since this dev environment can't reach the site. Treat a pass here as "the
-code does what it's supposed to with well-formed input shaped like the
-documented HLTV structure", not "this will work against the live site".
-"""
+"""Parser tests against real vlr.gg markup (trimmed copies of pages fetched on
+2026-10-07 during Valorant Champions 2026; see fixtures/README.md)."""
 
+import datetime as dt
 from pathlib import Path
 
-from cspredictor.scraping.parsers import parse_match_detail, parse_rankings_page, parse_results_page
-from cspredictor.scraping.results import parse_date_label
+from valpredictor.scraping.parsers import (
+    is_international_event,
+    parse_match_detail,
+    parse_results_page,
+    parse_veto,
+)
+from valpredictor.scraping.results import parse_date_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def _read(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
 def test_parse_results_page():
-    html = (FIXTURES / "results_page.html").read_text(encoding="utf-8")
-    rows = parse_results_page(html)
+    rows = parse_results_page(_read("results_page.html"))
     assert len(rows) == 3
 
-    row1 = rows[0]
-    assert row1.hltv_match_id == 2500001
-    assert row1.team1_name == "Team Alpha"
-    assert row1.team2_name == "Team Beta"
-    assert row1.team1_score == 2
-    assert row1.team2_score == 0
-    assert row1.date_label == "Results for 22nd September 2026"
-    assert row1.event_name == "Some Event"
+    first = rows[0]
+    assert first.vlr_match_id == 754732
+    assert first.match_url == "/754732/nrg-vs-t1-valorant-champions-2026-ubqf"
+    assert (first.team1_name, first.team2_name) == ("NRG", "T1")
+    assert (first.team1_score, first.team2_score) == (2, 0)
+    assert first.status == "completed"
+    assert first.event_name == "Valorant Champions 2026"
+    assert first.series == "Playoffs–Upper Quarterfinals"
+    assert first.date_label == "Wed, October 7, 2026"
 
-    row2 = rows[1]
-    assert row2.hltv_match_id == 2500002
-    assert row2.team1_score == 1
-    assert row2.team2_score == 16
-    assert row2.bo1_map == "Mirage"
+    # the second date header applies to the second and third rows
+    assert rows[1].date_label == rows[2].date_label == "Sun, October 4, 2026"
+    assert (rows[1].team1_name, rows[1].team2_name) == ("FUT Esports", "T1")
+    assert (rows[1].team1_score, rows[1].team2_score) == (0, 2)
 
-    row3 = rows[2]
-    assert row3.date_label == "Results for 21st September 2026"
-    assert row3.team1_name == "Team Epsilon"
+
+def test_parse_schedule_page_upcoming_live_and_tbd():
+    rows = parse_results_page(_read("schedule_page.html"))
+    by_id = {r.vlr_match_id: r for r in rows}
+
+    live = by_id[754733]
+    assert (live.team1_name, live.team2_name) == ("Paper Rex", "LOUD")
+    assert live.status == "live"
+
+    upcoming = by_id[754730]
+    assert (upcoming.team1_name, upcoming.team2_name) == ("100 Thieves", "G2 Esports")
+    assert upcoming.status == "upcoming"
+    assert (upcoming.team1_score, upcoming.team2_score) == (None, None)  # "–" placeholder
+
+    tbd = by_id[754738]
+    assert (tbd.team1_name, tbd.team2_name) == ("TBD", "TBD")
 
 
 def test_parse_date_label():
-    import datetime as dt
-
-    assert parse_date_label("Results for 22nd September 2026") == dt.date(2026, 9, 22)
-    assert parse_date_label("Results for 21st September 2026") == dt.date(2026, 9, 21)
-    assert parse_date_label("Results for today") == dt.date.today()
+    assert parse_date_label("Wed, October 7, 2026") == dt.date(2026, 10, 7)
+    assert parse_date_label("Sun, October 4, 2026") == dt.date(2026, 10, 4)
     assert parse_date_label(None) is None
     assert parse_date_label("garbage") is None
 
 
-def test_parse_match_detail():
-    html = (FIXTURES / "match_detail.html").read_text(encoding="utf-8")
-    detail = parse_match_detail(html, hltv_match_id=2500001)
+def test_parse_match_detail_completed_bo3():
+    d = parse_match_detail(_read("match_detail.html"), vlr_match_id=754732)
 
-    assert detail.team1_name == "Team Alpha"
-    assert detail.team2_name == "Team Beta"
-    assert detail.unix_timestamp_ms == 1758536400000
-    assert detail.event_name == "Some Event"
-    assert detail.event_hltv_id == 7001
-    assert detail.best_of == 3
-    assert detail.is_lan is True
+    assert (d.team1_name, d.team1_vlr_id) == ("NRG", 1034)
+    assert (d.team2_name, d.team2_vlr_id) == ("T1", 14)
+    assert d.event_name == "Valorant Champions 2026"
+    assert d.event_vlr_id == 2766
+    assert d.best_of == 3
+    assert d.status == "final"
+    assert d.is_international is True
+    # 2026-10-07 05:00:00 UTC
+    assert d.unix_timestamp_ms == int(dt.datetime(2026, 10, 7, 5, tzinfo=dt.timezone.utc).timestamp() * 1000)
 
-    assert len(detail.maps) == 3
-    m1, m2, m3 = detail.maps
-    assert m1.map_name == "Mirage"
-    assert m1.team1_score == 13
-    assert m1.team2_score == 8
-    assert m1.picked_by == "Team Alpha"
+    # Abyss "remains" but was never played (NRG won 2-0), so only two maps
+    assert [(m.map_name, m.team1_score, m.team2_score) for m in d.maps] == [
+        ("Lotus", 13, 11),
+        ("Summit", 13, 7),
+    ]
+    assert [m.picked_by for m in d.maps] == [2, 1]  # T1 picked Lotus, NRG picked Summit
 
-    assert m2.map_name == "Inferno"
-    assert m2.picked_by == "Team Beta"
+    assert [(s.team, s.action, s.map_name) for s in d.veto][-1] == (None, "remains", "Abyss")
+    assert len(d.veto) == 7
 
-    assert m3.map_name == "Anubis"
-    assert m3.picked_by is None  # decider / leftover map, not picked by either team
-
-    assert detail.team1_lineup == ["alphaOne", "alphaTwo", "alphaThree", "alphaFour", "alphaFive"]
-    assert detail.team2_lineup == ["betaOne", "betaTwo", "betaThree", "betaFour", "betaFive"]
-
-
-def test_parse_rankings_page():
-    html = (FIXTURES / "rankings_page.html").read_text(encoding="utf-8")
-    rows = parse_rankings_page(html)
-    assert len(rows) == 2
-    assert rows[0].rank == 1
-    assert rows[0].team_name == "Team Alpha"
-    assert rows[0].team_hltv_id == 1001
-    assert rows[0].points == 650
-    assert rows[1].rank == 2
-    assert rows[1].team_hltv_id == 1002
+    assert [name for name, _ in d.team1_lineup] == ["brawk", "keiko", "mada", "Ethan", "skuba"]
+    assert [name for name, _ in d.team2_lineup] == ["BuZz", "Meteor", "iZu", "Munchkin", "stax"]
+    assert d.team1_lineup[0] == ("brawk", 2172)
 
 
-def test_parsers_fail_soft_on_missing_fields():
-    html = "<html><body><div class='result-con'></div></body></html>"
-    rows = parse_results_page(html)
-    assert rows == []  # no link -> skipped, not a crash
+def test_parse_map_sides_from_real_fixture():
+    d = parse_match_detail(_read("match_detail.html"), vlr_match_id=754732)
+    lotus, summit = d.maps
 
-    empty_detail = parse_match_detail("<html><body></body></html>", hltv_match_id=999)
-    assert empty_detail.team1_name is None
-    assert empty_detail.maps == []
+    # header "5 / 8" for NRG then "7 / 4" for T1: first number = first-half side
+    assert (lotus.team1_sides.first_side, lotus.team1_sides.def_won, lotus.team1_sides.atk_won) == ("def", 5, 8)
+    assert (lotus.team2_sides.first_side, lotus.team2_sides.atk_won, lotus.team2_sides.def_won) == ("atk", 7, 4)
+    # every first-half round has exactly one winner: 5 (NRG def) + 7 (T1 atk) = 12
+    assert lotus.team1_sides.def_won + lotus.team2_sides.atk_won == 12
+    assert lotus.team1_sides.atk_won + lotus.team2_sides.def_won == 12
+
+    # a 13-7 map only plays 8 second-half rounds
+    assert summit.team1_sides.atk_won + summit.team2_sides.def_won == 8
+    assert summit.team1_sides.ot_won == summit.team2_sides.ot_won == 0
+
+
+_OT_MAP = """
+<div class="vm-stats-game" data-game-id="1"><div class="vm-stats-game-header">
+ <div class="team"><div class="score">12 </div><div><div class="team-name">A</div>
+   <span class="mod-t">8</span> / <span class="mod-ct">4</span> / <span class="mod-ot">0</span></div></div>
+ <div class="map"><div class="map-name">Lotus</div></div>
+ <div class="team mod-right"><div><div class="team-name">B</div>
+   <span class="mod-ct">4</span> / <span class="mod-t">8</span> / <span class="mod-ot">2</span></div>
+   <div class="score mod-win">14</div></div>
+</div></div>"""
+
+
+def test_parse_map_sides_with_overtime():
+    d = parse_match_detail(f"<html><body>{_OT_MAP}</body></html>", vlr_match_id=1)
+    (m,) = d.maps
+    assert (m.team1_score, m.team2_score) == (12, 14)
+    assert (m.team1_sides.first_side, m.team1_sides.atk_won, m.team1_sides.def_won, m.team1_sides.ot_won) == ("atk", 8, 4, 0)
+    assert (m.team2_sides.first_side, m.team2_sides.atk_won, m.team2_sides.def_won, m.team2_sides.ot_won) == ("def", 8, 4, 2)
+
+
+def test_inconsistent_starting_sides_are_discarded():
+    both_attack_first = _OT_MAP.replace('<span class="mod-ct">4</span> / <span class="mod-t">8</span> / <span class="mod-ot">2</span>',
+                                       '<span class="mod-t">4</span> / <span class="mod-ct">8</span> / <span class="mod-ot">2</span>')
+    (m,) = parse_match_detail(f"<html><body>{both_attack_first}</body></html>", vlr_match_id=1).maps
+    assert m.team1_sides is None and m.team2_sides is None  # can't both start on attack
+
+
+def test_parse_veto():
+    steps = parse_veto("100 Thieves ban Bind; G2 Esports pick Haven; Team Vitality ban Split; Lotus remains")
+    assert [(s.team, s.action, s.map_name) for s in steps] == [
+        ("100 Thieves", "ban", "Bind"),
+        ("G2 Esports", "pick", "Haven"),
+        ("Team Vitality", "ban", "Split"),
+        (None, "remains", "Lotus"),
+    ]
+    assert parse_veto(None) == []
+    assert parse_veto("") == []
+
+
+def test_is_international_event():
+    assert is_international_event("Valorant Champions 2026") is True
+    assert is_international_event("Valorant Masters Toronto 2026") is True
+    assert is_international_event("Champions Tour 2026: Americas Stage 1") is False
+    assert is_international_event("Esports World Cup 2026") is True
+    assert is_international_event("Esports World Cup 2026: Americas Qualifier") is False
+    assert is_international_event(None) is None
+
+
+def test_parsers_fail_soft_on_empty_input():
+    assert parse_results_page("<html><body></body></html>") == []
+    d = parse_match_detail("<html><body></body></html>", vlr_match_id=1)
+    assert d.team1_name is None and d.maps == [] and d.veto == []

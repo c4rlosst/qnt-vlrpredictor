@@ -1,13 +1,13 @@
-# cspredictor configuration
+# valpredictor configuration
 
 database:
-  path: "data/cspredictor.db"
+  path: "data/valpredictor.db"
 
 scraping:
-  base_url: "https://www.hltv.org"
-  # seconds between requests (a random jitter of +/- 40% is added on top of this)
-  min_delay_seconds: 4.0
-  max_delay_seconds: 7.0
+  base_url: "https://www.vlr.gg"
+  # randomized delay (seconds) between live requests
+  min_delay_seconds: 3.0
+  max_delay_seconds: 5.0
   # retry/backoff on 403/429/5xx
   max_retries: 5
   backoff_base_seconds: 10.0
@@ -17,14 +17,25 @@ scraping:
   max_requests_per_run: 2000
 
 backfill:
-  # default history window for the full backfill (see README for how to run it)
-  months_back: 24
+  # default history window (months) when --since is not given
+  months_back: 12
+  # Only matches whose event name matches `event_include` (and not
+  # `event_exclude`) get a full match-page fetch. Filtering on the results
+  # list is free, so this keeps the backfill to tier-1 play and an hour or so
+  # instead of thousands of tier-2/3 pages. Run `valpredictor scan-events` to
+  # see what names exist before tuning these.
+  event_include: "Champions Tour|VCT|Valorant Champions|Masters|Esports World Cup|Lock//In"
+  event_exclude: "Game Changers|Academy|Showmatch"
 
 features:
   elo:
     initial_rating: 1500.0
     k_factor: 32.0
     map_k_factor: 24.0
+    # when a lineup changes, pull that team's Elo this far (per new player,
+    # capped) back toward 1500: its past results came from other players
+    roster_change_shrink_per_player: 0.10
+    roster_change_shrink_cap: 0.50
   rolling_windows: [5, 10, 20]
   recent_days_congestion: 14
 
@@ -40,4 +51,7 @@ model:
     bagging_freq: 5
     verbose: -1
   num_boost_round: 500
+  # recent matches count more when training: a row this many days older than
+  # the newest one gets half the weight (null = all rows equal)
+  recency_half_life_days: 90
   early_stopping_rounds: 30

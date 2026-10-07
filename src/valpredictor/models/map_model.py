@@ -9,25 +9,29 @@ from __future__ import annotations
 from pathlib import Path
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 
-from cspredictor.config import load_config
+from valpredictor.config import load_config
 
 FEATURE_COLUMNS = [
     "map_name",
     "best_of",
-    "is_lan",
+    "is_international",
     "elo_diff",
     "map_elo_diff",
     "form_5_diff",
     "form_10_diff",
     "form_20_diff",
     "map_winrate_diff",
-    "rank_diff",
-    "rank_points_diff",
     "rest_days_diff",
     "congestion_diff",
     "roster_stability_diff",
+    "roster_continuity_diff",
+    "atk1_vs_def2",
+    "def1_vs_atk2",
+    "round_edge_diff",
+    "map_atk_bias",
     "standin_diff",
     "h2h_team1_rate",
     "h2h_n",
@@ -35,6 +39,16 @@ FEATURE_COLUMNS = [
 ]
 CATEGORICAL_COLUMNS = ["map_name"]
 TARGET_COLUMN = "target"
+
+
+def recency_weights(match_dates: pd.Series, half_life_days: float | None) -> np.ndarray | None:
+    """Exponential-decay sample weights: a row `half_life_days` older than the
+    newest row counts half as much. None disables weighting (all rows equal)."""
+    if not half_life_days:
+        return None
+    dates = pd.to_datetime(match_dates)
+    age_days = (dates.max() - dates).dt.days.to_numpy(dtype=float)
+    return 0.5 ** (age_days / float(half_life_days))
 
 
 def chronological_holdout_split(df: pd.DataFrame, valid_frac: float = 0.15) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -71,7 +85,8 @@ def train_map_model(
     cfg = (config or load_config())["model"]
     X_train = _prep(train_df)
     y_train = train_df[TARGET_COLUMN]
-    train_set = lgb.Dataset(X_train, label=y_train, categorical_feature=CATEGORICAL_COLUMNS)
+    weights = recency_weights(train_df["match_date"], cfg.get("recency_half_life_days"))
+    train_set = lgb.Dataset(X_train, label=y_train, weight=weights, categorical_feature=CATEGORICAL_COLUMNS)
 
     valid_sets = [train_set]
     valid_names = ["train"]

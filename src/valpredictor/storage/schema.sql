@@ -2,31 +2,30 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS teams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    hltv_id INTEGER UNIQUE,
+    vlr_id INTEGER UNIQUE,
     name TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name);
 
 CREATE TABLE IF NOT EXISTS players (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    hltv_id INTEGER UNIQUE,
+    vlr_id INTEGER UNIQUE,
     name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    hltv_id INTEGER UNIQUE,
+    vlr_id INTEGER UNIQUE,
     name TEXT,
-    is_lan INTEGER,           -- 0/1/NULL (unknown)
-    tier TEXT
+    is_international INTEGER  -- 0/1/NULL (event-name heuristic: Masters/Champions/EWC)
 );
 
 CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    hltv_id INTEGER UNIQUE NOT NULL,
+    vlr_id INTEGER UNIQUE NOT NULL,
     match_url TEXT,
     event_id INTEGER REFERENCES events(id),
-    match_date TEXT,          -- ISO 8601 date, derived from unix_timestamp_ms when available
+    match_date TEXT,          -- ISO 8601 date (UTC), derived from unix_timestamp_ms
     unix_timestamp_ms INTEGER,
     team1_id INTEGER REFERENCES teams(id),
     team2_id INTEGER REFERENCES teams(id),
@@ -34,7 +33,7 @@ CREATE TABLE IF NOT EXISTS matches (
     team1_score INTEGER,      -- maps won
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
-    is_lan INTEGER,
+    is_international INTEGER,
     scraped_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(match_date);
@@ -49,7 +48,11 @@ CREATE TABLE IF NOT EXISTS maps (
     team1_score INTEGER,
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
-    picked_by_team_id INTEGER REFERENCES teams(id),  -- NULL => decider/leftover
+    picked_by_team_id INTEGER REFERENCES teams(id),  -- NULL => decider
+    -- side data (NULL when unknown); see db._MAP_SIDE_COLUMNS, which adds these to older databases
+    team1_start_side TEXT,    -- 'atk' | 'def': the side team1 started the map on
+    team1_atk_won INTEGER, team1_def_won INTEGER, team1_ot_won INTEGER,
+    team2_atk_won INTEGER, team2_def_won INTEGER, team2_ot_won INTEGER,
     UNIQUE(match_id, map_order)
 );
 CREATE INDEX IF NOT EXISTS idx_maps_match ON maps(match_id);
@@ -64,18 +67,7 @@ CREATE TABLE IF NOT EXISTS rosters (
 CREATE INDEX IF NOT EXISTS idx_rosters_match ON rosters(match_id);
 CREATE INDEX IF NOT EXISTS idx_rosters_team ON rosters(team_id);
 
-CREATE TABLE IF NOT EXISTS ranking_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    team_id INTEGER NOT NULL REFERENCES teams(id),
-    snapshot_date TEXT NOT NULL,  -- ISO 8601 date
-    rank INTEGER,
-    points INTEGER,
-    UNIQUE(team_id, snapshot_date)
-);
-CREATE INDEX IF NOT EXISTS idx_rankings_date ON ranking_snapshots(snapshot_date);
-CREATE INDEX IF NOT EXISTS idx_rankings_team ON ranking_snapshots(team_id);
-
--- key/value store used by the backfill script to resume an interrupted run
+-- key/value store (reserved for resumable-run bookkeeping)
 CREATE TABLE IF NOT EXISTS scrape_state (
     key TEXT PRIMARY KEY,
     value TEXT

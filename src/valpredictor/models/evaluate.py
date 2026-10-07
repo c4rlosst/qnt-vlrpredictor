@@ -4,7 +4,7 @@ split — respecting match order is the whole point, since a model that peeked
 at the future would look artificially good.
 
 Reports the main LightGBM model against two baselines:
-  - naive-rank: always favors the team with the better (lower) HLTV rank
+  - naive-form: always favors the team with the better recent win rate
   - elo-only: a logistic function of match-level Elo difference alone
 """
 
@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-from cspredictor.config import load_config
-from cspredictor.models.map_model import chronological_holdout_split, predict_proba, train_map_model
+from valpredictor.config import load_config
+from valpredictor.models.map_model import chronological_holdout_split, predict_proba, train_map_model
 
 _NAIVE_CLIP = 0.9  # avoid infinite log-loss when the naive baseline is simply wrong
 
@@ -26,9 +26,9 @@ def elo_only_proba(elo_diff: pd.Series) -> pd.Series:
     return 1.0 / (1.0 + np.power(10.0, -elo_diff / 400.0))
 
 
-def naive_rank_proba(rank_diff: pd.Series) -> pd.Series:
-    # rank_diff > 0 means team1 has the better (lower) rank number
-    return rank_diff.apply(lambda d: _NAIVE_CLIP if pd.notna(d) and d > 0 else (1 - _NAIVE_CLIP))
+def naive_form_proba(form_10_diff: pd.Series) -> pd.Series:
+    # form_10_diff > 0 means team1 has the better win rate over its last 10 maps
+    return form_10_diff.apply(lambda d: _NAIVE_CLIP if pd.notna(d) and d > 0 else (1 - _NAIVE_CLIP))
 
 
 def _score(y_true: pd.Series, y_prob: pd.Series) -> dict:
@@ -46,8 +46,15 @@ def _score(y_true: pd.Series, y_prob: pd.Series) -> dict:
 
 
 def walk_forward_backtest(
-    model_df: pd.DataFrame, config: dict | None = None, n_folds: int = 5, min_train_frac: float = 0.4
+    model_df: pd.DataFrame,
+    config: dict | None = None,
+    n_folds: int = 5,
+    min_train_frac: float = 0.4,
+    predictor=None,
 ) -> dict:
+    """`predictor(train_df, test_df) -> P(team1 wins)` lets another model
+    (e.g. a logistic regression) be scored on exactly the same folds; the
+    default trains the LightGBM map model."""
     cfg = config or load_config()
     df = model_df.sort_values("match_date").reset_index(drop=True)
     dates = sorted(df["match_date"].unique())
@@ -73,11 +80,14 @@ def walk_forward_backtest(
         if train_df.empty or test_df.empty:
             continue
 
-        inner_train, inner_valid = chronological_holdout_split(train_df)
-        model = train_map_model(inner_train, valid_df=inner_valid if not inner_valid.empty else None, config=cfg)
-        model_proba = predict_proba(model, test_df)
+        if predictor is not None:
+            model_proba = pd.Series(predictor(train_df, test_df), index=test_df.index)
+        else:
+            inner_train, inner_valid = chronological_holdout_split(train_df)
+            model = train_map_model(inner_train, valid_df=inner_valid if not inner_valid.empty else None, config=cfg)
+            model_proba = predict_proba(model, test_df)
         elo_proba = elo_only_proba(test_df["elo_diff"])
-        naive_proba = naive_rank_proba(test_df["rank_diff"])
+        naive_proba = naive_form_proba(test_df["form_10_diff"])
         y = test_df["target"]
 
         fold_results.append(
@@ -87,7 +97,7 @@ def walk_forward_backtest(
                 "test_end": test_end,
                 "model": _score(y, model_proba),
                 "elo_only": _score(y, elo_proba),
-                "naive_rank": _score(y, naive_proba),
+                "naive_form": _score(y, naive_proba),
             }
         )
         oof_model.append(model_proba)
@@ -98,7 +108,7 @@ def walk_forward_backtest(
     overall = {
         "model": _score(pd.concat(oof_y), pd.concat(oof_model)),
         "elo_only": _score(pd.concat(oof_y), pd.concat(oof_elo)),
-        "naive_rank": _score(pd.concat(oof_y), pd.concat(oof_naive)),
+        "naive_form": _score(pd.concat(oof_y), pd.concat(oof_naive)),
     }
 
     return {"folds": fold_results, "overall": overall}

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valorant Match Predictor</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #181f27; --line: #2a3441; --text: #e8edf2; --muted: #8b98a8;
+    --a: #ff4655; --b: #4ec9b0; --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6f8; --panel: #ffffff; --line: #d9e0e7; --text: #17202a; --muted: #5d6b7a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 32px 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  input[type=checkbox] { padding: 0; width: 16px; height: 16px; }
+  .check { flex-direction: row; align-items: center; gap: 8px; padding-bottom: 8px; }
+  button { background: var(--a); border-color: var(--a); color: #fff; font-weight: 600; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
+  button:disabled { opacity: .5; cursor: wait; }
+  .error { color: var(--a); margin-top: 12px; }
+  .hidden { display: none; }
+  .match { margin-top: 16px; }
+  .names { display: flex; justify-content: space-between; font-weight: 600; font-size: 18px; margin-bottom: 8px; gap: 12px; }
+  .names span:last-child { text-align: right; }
+  .bar { display: flex; height: 34px; border-radius: 8px; overflow: hidden; font-weight: 700; font-size: 14px; }
+  .bar > div { display: flex; align-items: center; padding: 0 10px; color: #0b0f14; min-width: 0; }
+  .bar .a { background: var(--a); color: #fff; }
+  .bar .b { background: var(--b); justify-content: flex-end; }
+  .meta { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.live { color: var(--a); border-color: var(--a); }
+  .card-head { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  a { color: var(--b); }
+  .grid { display: grid; gap: 12px; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 32px; }
+  .statusbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .statusbar .msg { flex-basis: 100%; margin: 0; }
+  .spinner { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--line); border-top-color: var(--a); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Valorant Match Predictor</h1>
+  <p class="sub">Map-level LightGBM model on vlr.gg data. Match odds and score lines come from per-map probabilities.</p>
+
+  <div class="panel statusbar">
+    <div id="status-text" class="meta" style="margin:0">Loading status…</div>
+    <button id="refresh-data" title="Scrape newly finished matches from vlr.gg, rebuild features and retrain the model">Refresh data</button>
+    <p id="refresh-msg" class="meta msg hidden"></p>
+  </div>
+
+  <h2>Predict a matchup</h2>
+  <div class="panel">
+    <div class="row">
+      <label>Team 1 <input id="team1" list="teams" placeholder="Paper Rex" autocomplete="off"></label>
+      <label>Team 2 <input id="team2" list="teams" placeholder="LOUD" autocomplete="off"></label>
+      <label>Format
+        <select id="best_of"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option></select>
+      </label>
+      <label>Maps in play order (optional) <input id="maps" placeholder="Lotus,Summit,Abyss" autocomplete="off"></label>
+      <label class="check"><input id="international" type="checkbox" checked> International event</label>
+      <button id="go">Predict</button>
+    </div>
+    <datalist id="teams"></datalist>
+    <div id="error" class="error hidden"></div>
+    <div id="result" class="hidden"></div>
+  </div>
+
+  <h2>Live bracket <button id="refresh" class="secondary" style="margin-left:8px;padding:4px 10px">Refresh</button></h2>
+  <div id="upcoming" class="grid"><div class="panel">Loading schedule…</div></div>
+
+  <footer>Predictions are model estimates, not betting advice. Data © vlr.gg. Live matches are predicted pre-match and ignore the current score.</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pct = (p) => (p * 100).toFixed(1) + "%";
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") node.className = v; else if (k === "text") node.textContent = v; else node.setAttribute(k, v);
+  }
+  for (const c of children) if (c) node.append(c);
+  return node;
+}
+
+function probBar(team1, team2, p1) {
+  const bar = el("div", { class: "bar" },
+    el("div", { class: "a", style: `width:${p1 * 100}%`, text: pct(p1) }),
+    el("div", { class: "b", style: `width:${(1 - p1) * 100}%`, text: pct(1 - p1) }));
+  return el("div", {},
+    el("div", { class: "names" }, el("span", { text: team1 }), el("span", { text: team2 })), bar);
+}
+
+function scoreTable(pred) {
+  const rows = Object.entries(pred.score_distribution).sort((a, b) => b[1] - a[1]);
+  const t = el("table", {}, el("tr", {}, el("th", { text: "Exact score" }), el("th", { class: "num", text: "Probability" })));
+  for (const [score, p] of rows) {
+    const [a, b] = score.split("-");
+    t.append(el("tr", {}, el("td", { text: `${pred.team1} ${a}–${b} ${pred.team2}` }), el("td", { class: "num", text: pct(p) })));
+  }
+  return t;
+}
+
+function mapTable(pred) {
+  const t = el("table", {}, el("tr", {},
+    el("th", { text: "Map" }), el("th", { class: "num", text: `P(${pred.team1})` })));
+  if (pred.pool) {
+    const entries = Object.entries(pred.pool).sort((a, b) => b[1].weight - a[1].weight);
+    t.querySelector("tr").append(el("th", { class: "num", text: "Pool weight" }));
+    for (const [m, v] of entries)
+      t.append(el("tr", {}, el("td", { text: m }), el("td", { class: "num", text: pct(v.p_team1) }), el("td", { class: "num", text: pct(v.weight) })));
+  } else {
+    pred.maps.forEach((m, i) => t.append(el("tr", {}, el("td", { text: `${i + 1}. ${m}` }), el("td", { class: "num", text: pct(pred.map_probs[i]) }))));
+  }
+  return t;
+}
+
+function contextTable(pred) {
+  const fmt = (v, f) => (v === null || v === undefined ? "n/a" : f(v));
+  const t = el("table", {}, el("tr", {},
+    el("th", { text: "Team" }), el("th", { class: "num", text: "Elo" }), el("th", { class: "num", text: "Last 10 maps" }),
+    el("th", { class: "num", text: "Lineup continuity" }), el("th", { class: "num", text: "Same lineup for" }),
+    el("th", { class: "num", text: "Attack / Defence (pts vs avg)" })));
+  for (const key of ["team1", "team2"]) {
+    const c = pred.context[key];
+    t.append(el("tr", {}, el("td", { text: pred[key] }), el("td", { class: "num", text: String(c.elo) }),
+      el("td", { class: "num", text: fmt(c.form_10, (v) => (v * 100).toFixed(0) + "%") }),
+      el("td", { class: "num", text: fmt(c.roster_continuity, (v) => (v * 100).toFixed(0) + "%") }),
+      el("td", { class: "num", text: fmt(c.days_since_lineup_change, (v) => v + " days") }),
+      el("td", { class: "num", text: `${c.atk_edge_pts >= 0 ? "+" : ""}${c.atk_edge_pts} / ${c.def_edge_pts >= 0 ? "+" : ""}${c.def_edge_pts}` })));
+  }
+  return t;
+}
+
+function renderPrediction(pred) {
+  return el("div", { class: "match" },
+    probBar(pred.team1, pred.team2, pred.team1_win_prob),
+    el("p", { class: "meta", text: `Bo${pred.best_of} · ${pred.mode}` }),
+    contextTable(pred), mapTable(pred), scoreTable(pred));
+}
+
+async function api(path) {
+  const res = await fetch(path);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function loadTeams() {
+  const teams = await api("/api/teams");
+  const dl = $("teams");
+  dl.replaceChildren();
+  for (const t of teams) dl.append(el("option", { value: t.name, label: `Elo ${t.elo} · ${t.matches} matches` }));
+}
+
+// ---- data refresh: scrape new matches, rebuild features, retrain (runs on the server)
+let wasRunning = false;
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never");
+
+function renderStatus(s) {
+  $("status-text").textContent =
+    `Data through ${s.latest_match_date || "no matches yet"} · ${s.matches} matches · ${s.maps} maps · model trained ${fmtTime(s.model_trained_at)}`;
+  const r = s.refresh, btn = $("refresh-data"), msg = $("refresh-msg");
+  const running = r.state === "running";
+  btn.disabled = running;
+  btn.textContent = running ? "Refreshing…" : "Refresh data";
+  msg.classList.toggle("hidden", r.state === "idle");
+  msg.className = "msg " + (r.state === "error" ? "error" : "meta") + (r.state === "idle" ? " hidden" : "");
+  msg.replaceChildren(...(running ? [el("span", { class: "spinner" })] : []),
+    document.createTextNode(running ? `${r.step ? r.step + ": " : ""}${r.message}` : r.message));
+}
+
+async function pollStatus() {
+  try {
+    const s = await api("/api/status");
+    renderStatus(s);
+    if (s.refresh.state === "running") {
+      wasRunning = true;
+      setTimeout(pollStatus, 1500);
+    } else if (wasRunning) {
+      wasRunning = false;
+      $("result").classList.add("hidden");
+      await loadTeams();
+      loadUpcoming(true);
+    }
+  } catch (e) {
+    $("status-text").textContent = "Status unavailable: " + e.message;
+  }
+}
+
+async function startRefresh() {
+  $("refresh-data").disabled = true;
+  try {
+    await fetch("/api/refresh", { method: "POST", headers: { "X-Requested-With": "valpredictor" } });
+    wasRunning = true;
+  } finally {
+    pollStatus();
+  }
+}
+
+async function predict() {
+  $("error").classList.add("hidden");
+  $("go").disabled = true;
+  try {
+    const q = new URLSearchParams({
+      team1: $("team1").value.trim(), team2: $("team2").value.trim(), best_of: $("best_of").value,
+      maps: $("maps").value.trim(), international: $("international").checked ? "1" : "0",
+    });
+    const pred = await api("/api/predict?" + q);
+    const box = $("result");
+    box.replaceChildren(renderPrediction(pred));
+    box.classList.remove("hidden");
+  } catch (e) {
+    $("result").classList.add("hidden");
+    $("error").textContent = e.message;
+    $("error").classList.remove("hidden");
+  } finally { $("go").disabled = false; }
+}
+
+async function loadUpcoming(force) {
+  const box = $("upcoming");
+  box.replaceChildren(el("div", { class: "panel", text: "Fetching the live schedule from vlr.gg…" }));
+  $("refresh").disabled = true;
+  try {
+    const items = await api("/api/upcoming?event=Champions" + (force ? "&refresh=1" : ""));
+    box.replaceChildren();
+    if (!items.length) box.append(el("div", { class: "panel", text: "No upcoming or live Champions matches on the schedule." }));
+    for (const m of items) {
+      const head = el("div", { class: "card-head" },
+        el("span", { text: `${m.date || ""} ${m.time || ""} · ${m.series || ""}` }),
+        el("span", {}, m.status === "live" ? el("span", { class: "pill live", text: "LIVE" }) : el("span", { class: "pill", text: m.status || "" }), " ",
+          el("a", { href: m.url, target: "_blank", rel: "noopener", text: "vlr.gg" })));
+      const body = m.prediction
+        ? el("div", {}, probBar(m.team1, m.team2, m.prediction.team1_win_prob),
+            el("p", { class: "meta", text: `Bo${m.prediction.best_of} · ${m.prediction.mode}` }))
+        : el("div", {}, el("div", { class: "names" }, el("span", { text: m.team1 }), el("span", { text: m.team2 })),
+            el("p", { class: "meta", text: m.note || "" }));
+      const card = el("div", { class: "panel" }, head, body);
+      if (m.prediction) {
+        const fill = () => { $("team1").value = m.team1; $("team2").value = m.team2; $("best_of").value = String(m.prediction.best_of); window.scrollTo({ top: 0, behavior: "smooth" }); predict(); };
+        card.style.cursor = "pointer"; card.title = "Click for the full breakdown";
+        card.addEventListener("click", (ev) => { if (ev.target.tagName !== "A") fill(); });
+      }
+      box.append(card);
+    }
+  } catch (e) {
+    box.replaceChildren(el("div", { class: "panel error", text: e.message }));
+  } finally { $("refresh").disabled = false; }
+}
+
+$("refresh-data").addEventListener("click", startRefresh);
+$("go").addEventListener("click", predict);
+$("refresh").addEventListener("click", () => loadUpcoming(true));
+for (const id of ["team1", "team2", "maps"]) $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") predict(); });
+loadTeams().catch((e) => { $("error").textContent = e.message; $("error").classList.remove("hidden"); });
+pollStatus();
+loadUpcoming(false);
+</script>
+</body>
+</html>

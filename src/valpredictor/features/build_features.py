@@ -2,33 +2,32 @@
 exposes the same chronological-replay trackers so `predict.py` can ask for a
 team's *current* (as-of-today) state using identical logic to training time.
 
-Chronological replay: matches are processed in date order; every feature for
+Chronological replay: matches are processed in time order; every feature for
 a match is read from trackers *before* that match's own result is folded in,
 so no row ever sees information from its own outcome or from the future.
 
 Match-level state (Elo, head-to-head, rest, congestion, roster) is snapshotted
-once per match and reused for every map in that match, since those facts are
-true "as of the start of the match day". Map-level state (per-map Elo, per-map
-form) updates map-by-map *within* a multi-map match, since maps in a Bo3/Bo5
-are genuinely sequential in time and a map 2 prediction can legitimately use
-map 1's result from the same match.
+once per match and reused for every map in that match. Map-level state
+(per-map Elo, per-map form) updates map-by-map *within* a multi-map match,
+since maps in a Bo3/Bo5 are genuinely sequential in time and a map 2
+prediction can legitimately use map 1's result from the same match.
 """
 
 from __future__ import annotations
 
-import bisect
 import datetime as dt
 from dataclasses import dataclass
 
 import pandas as pd
 
-from cspredictor.config import load_config
-from cspredictor.features.elo import EloTracker, MapEloTracker
-from cspredictor.features.rolling import (
+from valpredictor.config import load_config
+from valpredictor.features.elo import EloTracker, MapEloTracker
+from valpredictor.features.rolling import (
     FormTracker,
     H2HTracker,
     RestAndCongestionTracker,
     RosterTracker,
+    SideTracker,
 )
 
 PAIRED_TEAM_COLUMNS = [
@@ -38,11 +37,12 @@ PAIRED_TEAM_COLUMNS = [
     "form_10",
     "form_20",
     "map_winrate",
-    "rank",
-    "rank_points",
     "rest_days",
     "congestion",
     "roster_stability_days",
+    "roster_continuity",
+    "atk_edge",
+    "def_edge",
     "standin",
 ]
 
@@ -51,48 +51,21 @@ def _to_date(date_str: str | None) -> dt.date | None:
     return dt.date.fromisoformat(date_str) if date_str else None
 
 
-class _RankLookup:
-    """Per-team sorted (date, rank, points) list, queried via bisect for the
-    latest snapshot strictly before a given date."""
-
-    def __init__(self, ranking_df: pd.DataFrame):
-        self._by_team: dict[int, list[tuple[dt.date, int | None, int | None]]] = {}
-        for team_id, group in ranking_df.groupby("team_id"):
-            rows = sorted(
-                (
-                    (dt.date.fromisoformat(r.snapshot_date), r.rank, r.points)
-                    for r in group.itertuples()
-                ),
-                key=lambda t: t[0],
-            )
-            self._by_team[team_id] = rows
-
-    def lookup(self, team_id: int, before_date: dt.date) -> tuple[int | None, int | None]:
-        rows = self._by_team.get(team_id)
-        if not rows:
-            return None, None
-        dates = [r[0] for r in rows]
-        idx = bisect.bisect_left(dates, before_date) - 1
-        if idx < 0:
-            return None, None
-        _, rank, points = rows[idx]
-        return rank, points
-
-
 def load_raw_tables(conn) -> dict[str, pd.DataFrame]:
     matches = pd.read_sql_query(
         """
-        SELECT id, hltv_id, match_date, team1_id, team2_id, best_of, is_lan
+        SELECT id, vlr_id, match_date, team1_id, team2_id, best_of, is_international
         FROM matches
         WHERE match_date IS NOT NULL AND team1_id IS NOT NULL AND team2_id IS NOT NULL
-        ORDER BY match_date, hltv_id
+        ORDER BY COALESCE(unix_timestamp_ms, 0), vlr_id
         """,
         conn,
     )
     maps = pd.read_sql_query(
         """
         SELECT match_id, map_order, map_name, team1_score, team2_score,
-               winner_team_id, picked_by_team_id
+               winner_team_id, picked_by_team_id, team1_start_side,
+               team1_atk_won, team1_def_won, team2_atk_won, team2_def_won
         FROM maps
         WHERE team1_score IS NOT NULL AND team2_score IS NOT NULL
         ORDER BY match_id, map_order
@@ -100,10 +73,7 @@ def load_raw_tables(conn) -> dict[str, pd.DataFrame]:
         conn,
     )
     rosters = pd.read_sql_query("SELECT match_id, team_id, player_id FROM rosters", conn)
-    rankings = pd.read_sql_query(
-        "SELECT team_id, snapshot_date, rank, points FROM ranking_snapshots", conn
-    )
-    return {"matches": matches, "maps": maps, "rosters": rosters, "rankings": rankings}
+    return {"matches": matches, "maps": maps, "rosters": rosters}
 
 
 @dataclass
@@ -116,34 +86,42 @@ class ReplayState:
     h2h: H2HTracker
     rest_cong: RestAndCongestionTracker
     roster: RosterTracker
-    rank_lookup: _RankLookup
+    side: SideTracker
     rows: list[dict]
 
 
-def _team_snapshot(state: ReplayState, team_id: int, as_of: dt.date) -> dict:
+def _team_snapshot(
+    state: ReplayState, team_id: int, as_of: dt.date, roster: frozenset[int] | None = None
+) -> dict:
     """The same paired-column values used at training time, computed fresh
     for `team_id` as of `as_of` — used both mid-replay (as_of = that match's
-    date) and for live prediction (as_of = today)."""
-    rank, points = state.rank_lookup.lookup(team_id, as_of)
+    date, roster = that match's lineup) and for live prediction (as_of = today,
+    roster = the team's most recent known lineup)."""
+    win_rates = state.form.win_rates(team_id)
+    if roster is None:
+        roster = state.roster.last_roster(team_id)
+    atk_edge, def_edge = state.side.edges(team_id)
     return {
+        "roster_continuity": state.roster.continuity(team_id, roster),
+        "atk_edge": atk_edge,
+        "def_edge": def_edge,
         "elo": state.elo.rating(team_id),
-        "form_5": state.form.win_rates(team_id)[5],
-        "form_10": state.form.win_rates(team_id)[10],
-        "form_20": state.form.win_rates(team_id)[20],
+        "form_5": win_rates[5],
+        "form_10": win_rates[10],
+        "form_20": win_rates[20],
         "rest_days": state.rest_cong.rest_days(team_id, as_of),
         "congestion": state.rest_cong.congestion(team_id, as_of),
         "roster_stability_days": state.roster.stability_days(team_id, as_of),
-        "rank": rank,
-        "rank_points": points,
     }
 
 
 def replay(conn, config: dict | None = None) -> ReplayState:
     cfg = (config or load_config())["features"]
     tables = load_raw_tables(conn)
-    matches, maps, rosters, rankings = (
-        tables["matches"], tables["maps"], tables["rosters"], tables["rankings"]
-    )
+    matches, maps, rosters = tables["matches"], tables["maps"], tables["rosters"]
+
+    shrink_per_player = float(cfg["elo"].get("roster_change_shrink_per_player", 0.0))
+    shrink_cap = float(cfg["elo"].get("roster_change_shrink_cap", 0.5))
 
     maps_by_match = {mid: g.sort_values("map_order") for mid, g in maps.groupby("match_id")}
     rosters_by_match_team = {
@@ -157,7 +135,7 @@ def replay(conn, config: dict | None = None) -> ReplayState:
         h2h=H2HTracker(),
         rest_cong=RestAndCongestionTracker(cfg["recent_days_congestion"]),
         roster=RosterTracker(),
-        rank_lookup=_RankLookup(rankings),
+        side=SideTracker(),
         rows=[],
     )
 
@@ -170,12 +148,20 @@ def replay(conn, config: dict | None = None) -> ReplayState:
         if match_maps is None or match_maps.empty:
             continue
 
-        t1_snap = _team_snapshot(state, t1, match_date)
-        t2_snap = _team_snapshot(state, t2, match_date)
-        h2h_rate, h2h_n = state.h2h.win_rate(t1, t2)
-
         t1_roster = rosters_by_match_team.get((match.id, t1), frozenset())
         t2_roster = rosters_by_match_team.get((match.id, t2), frozenset())
+
+        # A changed lineup means a team's past results were earned by other
+        # players: pull its Elo back toward average in proportion to how many
+        # players are new (lineups are known before the match starts).
+        for team, roster in ((t1, t1_roster), (t2, t2_roster)):
+            changed = state.roster.players_changed(team, roster)
+            if changed and shrink_per_player:
+                state.elo.regress(team, min(shrink_cap, shrink_per_player * changed))
+
+        t1_snap = _team_snapshot(state, t1, match_date, t1_roster or None)
+        t2_snap = _team_snapshot(state, t2, match_date, t2_roster or None)
+        h2h_rate, h2h_n = state.h2h.win_rate(t1, t2)
         t1_standin = state.roster.is_standin_match(t1, t1_roster)
         t2_standin = state.roster.is_standin_match(t2, t2_roster)
 
@@ -200,7 +186,7 @@ def replay(conn, config: dict | None = None) -> ReplayState:
                     "map_name": map_name,
                     "match_date": match.match_date,
                     "best_of": match.best_of,
-                    "is_lan": match.is_lan,
+                    "is_international": match.is_international,
                     "team1_id": t1,
                     "team2_id": t2,
                     "team1_pick": pick,
@@ -219,16 +205,19 @@ def replay(conn, config: dict | None = None) -> ReplayState:
                     "team2_form_20": t2_snap["form_20"],
                     "team1_map_winrate": state.form.map_win_rate(t1, map_name),
                     "team2_map_winrate": state.form.map_win_rate(t2, map_name),
-                    "team1_rank": t1_snap["rank"],
-                    "team2_rank": t2_snap["rank"],
-                    "team1_rank_points": t1_snap["rank_points"],
-                    "team2_rank_points": t2_snap["rank_points"],
                     "team1_rest_days": t1_snap["rest_days"],
                     "team2_rest_days": t2_snap["rest_days"],
                     "team1_congestion": t1_snap["congestion"],
                     "team2_congestion": t2_snap["congestion"],
                     "team1_roster_stability_days": t1_snap["roster_stability_days"],
                     "team2_roster_stability_days": t2_snap["roster_stability_days"],
+                    "team1_roster_continuity": t1_snap["roster_continuity"],
+                    "team2_roster_continuity": t2_snap["roster_continuity"],
+                    "team1_atk_edge": t1_snap["atk_edge"],
+                    "team2_atk_edge": t2_snap["atk_edge"],
+                    "team1_def_edge": t1_snap["def_edge"],
+                    "team2_def_edge": t2_snap["def_edge"],
+                    "map_atk_bias": state.side.map_atk_bias(map_name),
                     "team1_standin": t1_standin,
                     "team2_standin": t2_standin,
                 }
@@ -238,6 +227,12 @@ def replay(conn, config: dict | None = None) -> ReplayState:
             state.map_elo.update(t1, t2, map_name, team1_won_map)
             state.form.update(t1, team1_won_map, map_name)
             state.form.update(t2, not team1_won_map, map_name)
+            if m.team1_start_side in ("atk", "def") and not pd.isna(m.team1_atk_won):
+                state.side.update(
+                    t1, t2, map_name, int(m.team1_score), int(m.team2_score),
+                    int(m.team1_atk_won), int(m.team1_def_won), int(m.team2_atk_won), int(m.team2_def_won),
+                    m.team1_start_side,
+                )
 
             maps_won[t1] += int(team1_won_map)
             maps_won[t2] += int(not team1_won_map)
@@ -298,7 +293,7 @@ def to_model_matrix(df: pd.DataFrame) -> pd.DataFrame:
     out["team1_id"] = df["team1_id"]
     out["team2_id"] = df["team2_id"]
     out["best_of"] = df["best_of"]
-    out["is_lan"] = df["is_lan"]
+    out["is_international"] = df["is_international"]
 
     out["elo_diff"] = df["team1_elo"] - df["team2_elo"]
     out["map_elo_diff"] = df["team1_map_elo"] - df["team2_map_elo"]
@@ -306,12 +301,16 @@ def to_model_matrix(df: pd.DataFrame) -> pd.DataFrame:
     out["form_10_diff"] = df["team1_form_10"] - df["team2_form_10"]
     out["form_20_diff"] = df["team1_form_20"] - df["team2_form_20"]
     out["map_winrate_diff"] = df["team1_map_winrate"] - df["team2_map_winrate"]
-    # lower HLTV rank number = better team, so this diff is positive when team1 is favored
-    out["rank_diff"] = df["team2_rank"] - df["team1_rank"]
-    out["rank_points_diff"] = df["team1_rank_points"] - df["team2_rank_points"]
     out["rest_days_diff"] = df["team1_rest_days"] - df["team2_rest_days"]
+    # more recent matches = more fatigue, so this diff is positive when team1 is fresher
     out["congestion_diff"] = df["team2_congestion"] - df["team1_congestion"]
     out["roster_stability_diff"] = df["team1_roster_stability_days"] - df["team2_roster_stability_days"]
+    out["roster_continuity_diff"] = df["team1_roster_continuity"] - df["team2_roster_continuity"]
+    # side matchup: team1's attack vs team2's defence, and team1's defence vs team2's attack
+    out["atk1_vs_def2"] = df["team1_atk_edge"] - df["team2_def_edge"]
+    out["def1_vs_atk2"] = df["team1_def_edge"] - df["team2_atk_edge"]
+    out["round_edge_diff"] = out["atk1_vs_def2"] + out["def1_vs_atk2"]
+    out["map_atk_bias"] = df["map_atk_bias"]
     out["standin_diff"] = df["team2_standin"].astype("Int64") - df["team1_standin"].astype("Int64")
     out["h2h_team1_rate"] = df["h2h_team1_rate"]
     out["h2h_n"] = df["h2h_n"]
@@ -319,6 +318,11 @@ def to_model_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
     out["target"] = df["team1_won_map"]
     return out
+
+
+def diff_cross(key1: str, key2: str, t1_snap: dict, t2_snap: dict) -> float | None:
+    a, b = t1_snap.get(key1), t2_snap.get(key2)
+    return None if a is None or b is None else a - b
 
 
 def snapshot_pair_to_model_row(
@@ -329,8 +333,9 @@ def snapshot_pair_to_model_row(
     h2h_n: int,
     team1_pick: int,
     best_of: int | None,
-    is_lan: bool | None,
+    is_international: bool | None,
     map_name: str | None,
+    map_atk_bias: float | None = None,
 ) -> dict:
     """Same diff-feature logic as `to_model_matrix`, applied to a single live
     pair of snapshots (see `current_team_snapshot`) for prediction."""
@@ -341,21 +346,26 @@ def snapshot_pair_to_model_row(
             return None
         return (b - a) if reverse else (a - b)
 
+    atk1_vs_def2 = diff_cross("atk_edge", "def_edge", t1_snap, t2_snap)
+    def1_vs_atk2 = diff_cross("def_edge", "atk_edge", t1_snap, t2_snap)
     return {
+        "atk1_vs_def2": atk1_vs_def2,
+        "def1_vs_atk2": def1_vs_atk2,
+        "round_edge_diff": None if atk1_vs_def2 is None or def1_vs_atk2 is None else atk1_vs_def2 + def1_vs_atk2,
+        "map_atk_bias": map_atk_bias,
         "map_name": map_name or "unknown",
         "best_of": best_of,
-        "is_lan": is_lan,
+        "is_international": is_international,
         "elo_diff": diff("elo"),
         "map_elo_diff": diff("map_elo"),
         "form_5_diff": diff("form_5"),
         "form_10_diff": diff("form_10"),
         "form_20_diff": diff("form_20"),
         "map_winrate_diff": diff("map_winrate"),
-        "rank_diff": diff("rank", reverse=True),
-        "rank_points_diff": diff("rank_points"),
         "rest_days_diff": diff("rest_days"),
         "congestion_diff": diff("congestion", reverse=True),
         "roster_stability_diff": diff("roster_stability_days"),
+        "roster_continuity_diff": diff("roster_continuity"),
         "standin_diff": None,
         "h2h_team1_rate": h2h_team1_rate,
         "h2h_n": h2h_n,
