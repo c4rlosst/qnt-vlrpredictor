@@ -38,15 +38,12 @@ LR_FEATURES = [
 
 
 def logistic_predictor(cols: list[str], half_life: float | None, C: float):
-    """Logistic regression on `cols` (raw feature names, plus the derived h2h / stage interactions)."""
+    """Logistic regression on `cols` (raw feature names, plus the derived h2h column)."""
 
     def predict(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
         def prep(df):
             X = df.reindex(columns=LR_FEATURES).copy()
             X["h2h"] = df["h2h_team1_rate"].fillna(0.5) - 0.5
-            # the favourite's edge may be bigger or smaller depending on what's at stake / the event level
-            X["elo_x_regular"] = df["elo_diff"] * (df["stakes"] == 0)
-            X["elo_x_intl"] = df["elo_diff"] * (df["event_tier"] == 2)
             return X[cols].fillna(0.0).to_numpy(dtype=float)
 
         scaler = StandardScaler().fit(prep(train))
@@ -84,7 +81,7 @@ def logloss_rows(y: np.ndarray, p: np.ndarray) -> np.ndarray:
 
 def run(table: pd.DataFrame, cfg: dict, folds: int, label: str) -> list[dict]:
     hl = cfg["model"].get("recency_half_life_days")
-    all_cols = LR_FEATURES + ["h2h", "elo_x_regular", "elo_x_intl"]
+    all_cols = LR_FEATURES + ["h2h"]
 
     def elo_plus(label: str, *extra: str):
         return f"Elo + {label}", logistic_predictor(["elo_diff", *extra], hl, 1.0)
@@ -99,7 +96,6 @@ def run(table: pd.DataFrame, cfg: dict, folds: int, label: str) -> list[dict]:
         elo_plus("head-to-head", "h2h"),
         elo_plus("roster continuity", "roster_continuity_diff"),
         elo_plus("rest / congestion", "rest_days_diff", "congestion_diff"),
-        elo_plus("stage x Elo", "elo_x_regular", "elo_x_intl"),
         ("All features (LR, C=0.1)", logistic_predictor(all_cols, hl, 0.1)),
         ("GBM (config)", gbm_predictor(cfg)),
         ("GBM regularised", gbm_predictor(with_model_params(

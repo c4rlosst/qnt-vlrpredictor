@@ -75,7 +75,7 @@ def _map_probs(
 ) -> list[float]:
     """P(team1 wins each map). Evaluated in both team orders and averaged, so
     the result is exactly antisymmetric (P(A beats B) == 1 - P(B beats A)).
-    `ctx` carries the match context: is_international, event_tier, stakes."""
+    `ctx` carries the match context (is_international)."""
     h2h_rate, h2h_n = state.h2h.win_rate(team1_id, team2_id)
     forward, mirrored = [], []
     for map_name, flag in zip(map_names, pick_flags):
@@ -136,8 +136,6 @@ def predict_match(
     is_international: bool | None = None,
     config: dict | None = None,
     state: ReplayState | None = None,
-    event_tier: int | None = None,
-    stakes: int | None = None,
 ) -> dict:
     cfg = config or load_config()
     team1_id = _resolve_team(conn, team1_name)
@@ -149,9 +147,7 @@ def predict_match(
     picks = picks or {}
     pool = None
     scenarios = None
-    if event_tier is None and is_international:
-        event_tier = 2
-    ctx = dict(is_international=is_international, event_tier=event_tier, stakes=stakes)
+    ctx = dict(is_international=is_international)
 
     if maps:
         picked_by = {}

@@ -17,8 +17,7 @@ from valpredictor.config import load_config
 FEATURE_COLUMNS = [
     "map_name",
     "best_of",
-    "event_tier",
-    "stakes",
+    "is_international",
     "elo_diff",
     "map_elo_diff",
     "form_5_diff",

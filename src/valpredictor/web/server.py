@@ -27,7 +27,6 @@ from valpredictor.models.predict import (
 )
 from valpredictor.pipeline import refresh
 from valpredictor.scraping.client import VLRClient
-from valpredictor.stage import STAGE_CHOICES
 from valpredictor.storage.db import get_connection
 from valpredictor.upcoming import predict_upcoming
 
@@ -152,11 +151,9 @@ class App:
         conn = get_connection(self.db_path)
         maps = [m.strip() for m in params.get("maps", "").split(",") if m.strip()] or None
         best_of = int(params.get("best_of", "3"))
-        international = params.get("international") == "1"
         result = predict_match(
             conn, model, params["team1"], params["team2"], best_of=best_of, maps=maps,
-            is_international=True if international else None, state=state,
-            event_tier=2 if international else 1, stakes=STAGE_CHOICES.get(params.get("stage", "")),
+            is_international=True if params.get("international") == "1" else None, state=state,
         )
         return result_to_json(result)
 

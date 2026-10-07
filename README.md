@@ -9,8 +9,7 @@ Personal project, not betting advice.
 was played. History is replayed in date order, so a row never sees its own result or the future.
 - **Elo:** an overall rating plus one per map. The expected score is `1 / (1 + 10^((Rb - Ra) / 400))`.
 - **Form:** win rate over the last 5, 10 and 20 maps and on that map, plus head-to-head.
-- **Context:** rest days, who picked the map, the event level (international / regional league /
-  other) and the stakes (regular season, playoffs, elimination, final).
+- **Context:** rest days, who picked the map, and whether it is an international event.
 - **Rosters:** lineup continuity. When a lineup changes, that team's Elo is pulled 10% per new player
   (max 50%) back toward average.
 - **Sides:** each team's attack and defence round win rate against the league average, the matchup
@@ -35,12 +34,13 @@ line for reference. Predictions are meant to be made before the game starts; the
 On a full season (about 2,000 maps) the model scores ~55% per map and **statistically ties plain Elo**
 (log-loss 0.687 vs 0.685); no extra feature group beat Elo with confidence. Tested on their own:
 - starting side: team that started on attack won 48.6% vs 49.8% expected (-1.2% +/- 1.7%)
-- stage: favourites beat expectation by +4.1% +/- 1.8% in the regular season but -2.5% +/- 2.0% in
-  playoffs; a third Bo3 map happens 42% (regular season) vs 47% (playoffs); 46.7% +/- 2.3% overall
+- the type of game (regular season vs playoffs vs final): a model that scaled Elo by it was
+  significantly worse than plain Elo (+0.007 +/- 0.003 log-loss), so it is not used
 - each map's attack/defence balance varies a lot (attackers win ~55% on Abyss, ~45% on Ascent)
+- 46.7% +/- 2.3% of real Bo3s go to a third map
 
-Scripts: `analyze_start_side.py`, `analyze_stage.py`, `compare_variants.py`,
-`fit_series_tau.py`, `check_series_calibration.py`.
+Scripts: `analyze_start_side.py`, `compare_variants.py`, `fit_series_tau.py`,
+`check_series_calibration.py`.
 
 ## Limits
 

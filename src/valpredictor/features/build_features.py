@@ -54,7 +54,7 @@ def _to_date(date_str: str | None) -> dt.date | None:
 def load_raw_tables(conn) -> dict[str, pd.DataFrame]:
     matches = pd.read_sql_query(
         """
-        SELECT id, vlr_id, match_date, team1_id, team2_id, best_of, is_international, event_tier, stakes
+        SELECT id, vlr_id, match_date, team1_id, team2_id, best_of, is_international
         FROM matches
         WHERE match_date IS NOT NULL AND team1_id IS NOT NULL AND team2_id IS NOT NULL
         ORDER BY COALESCE(unix_timestamp_ms, 0), vlr_id
@@ -187,8 +187,6 @@ def replay(conn, config: dict | None = None) -> ReplayState:
                     "match_date": match.match_date,
                     "best_of": match.best_of,
                     "is_international": match.is_international,
-                    "event_tier": match.event_tier,
-                    "stakes": match.stakes,
                     "team1_id": t1,
                     "team2_id": t2,
                     "team1_pick": pick,
@@ -296,8 +294,6 @@ def to_model_matrix(df: pd.DataFrame) -> pd.DataFrame:
     out["team2_id"] = df["team2_id"]
     out["best_of"] = df["best_of"]
     out["is_international"] = df["is_international"]
-    out["event_tier"] = df["event_tier"]
-    out["stakes"] = df["stakes"]
 
     out["elo_diff"] = df["team1_elo"] - df["team2_elo"]
     out["map_elo_diff"] = df["team1_map_elo"] - df["team2_map_elo"]
@@ -340,8 +336,6 @@ def snapshot_pair_to_model_row(
     is_international: bool | None,
     map_name: str | None,
     map_atk_bias: float | None = None,
-    event_tier: int | None = None,
-    stakes: int | None = None,
 ) -> dict:
     """Same diff-feature logic as `to_model_matrix`, applied to a single live
     pair of snapshots (see `current_team_snapshot`) for prediction."""
@@ -362,8 +356,6 @@ def snapshot_pair_to_model_row(
         "map_name": map_name or "unknown",
         "best_of": best_of,
         "is_international": is_international,
-        "event_tier": event_tier,
-        "stakes": stakes,
         "elo_diff": diff("elo"),
         "map_elo_diff": diff("map_elo"),
         "form_5_diff": diff("form_5"),

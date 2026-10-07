@@ -74,13 +74,6 @@
         <select id="best_of"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option></select>
       </label>
       <label>Maps in play order (optional) <input id="maps" placeholder="Lotus,Summit,Abyss" autocomplete="off"></label>
-      <label>Stage
-        <select id="stage">
-          <option value="">Not specified</option><option value="regular">Regular season</option>
-          <option value="playoffs">Playoffs</option><option value="elimination">Elimination / lower bracket</option>
-          <option value="final">Final</option>
-        </select>
-      </label>
       <label class="check"><input id="international" type="checkbox" checked> International event</label>
       <button id="go">Predict</button>
     </div>
@@ -265,7 +258,7 @@ async function predict() {
   try {
     const q = new URLSearchParams({
       team1: $("team1").value.trim(), team2: $("team2").value.trim(), best_of: $("best_of").value,
-      maps: $("maps").value.trim(), international: $("international").checked ? "1" : "0", stage: $("stage").value,
+      maps: $("maps").value.trim(), international: $("international").checked ? "1" : "0",
     });
     const pred = await api("/api/predict?" + q);
     const box = $("result");

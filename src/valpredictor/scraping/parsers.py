@@ -19,8 +19,6 @@ from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup, Tag
 
-from valpredictor.stage import classify_event_tier, classify_stakes
-
 logger = logging.getLogger(__name__)
 
 _MATCH_ID = re.compile(r"^/(\d+)/")
@@ -32,10 +30,20 @@ _VETO_STEP = re.compile(r"^(?P<team>.+?)\s+(?P<action>ban|pick)\s+(?P<map>\S+)$"
 _VETO_REMAINS = re.compile(r"^(?P<map>\S+)\s+remains$", re.IGNORECASE)
 
 
+_INTERNATIONAL_EVENT = re.compile(
+    r"\bMasters\b|\bValorant Champions\b|\bEsports World Cup\b|\bLock//In\b", re.IGNORECASE
+)
+_LOWER_LEVEL_EVENT = re.compile(r"qualifier|challengers|ascension|game changers|academy", re.IGNORECASE)
+
+
 def is_international_event(event_name: str | None) -> bool | None:
-    """Masters / Champions / Esports World Cup (not their regional qualifiers)."""
-    tier = classify_event_tier(event_name)
-    return None if tier is None else tier == 2
+    """Masters / Champions / Esports World Cup. Their regional qualifiers and
+    Challengers-level events (some of which say "Masters") are not international."""
+    if not event_name:
+        return None
+    if _LOWER_LEVEL_EVENT.search(event_name):
+        return False
+    return bool(_INTERNATIONAL_EVENT.search(event_name))
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -188,8 +196,6 @@ class MatchDetail:
     best_of: int | None = None
     status: str | None = None  # "final" | "upcoming" | "live"
     is_international: bool | None = None
-    event_tier: int | None = None  # see valpredictor.stage
-    stakes: int | None = None
     odds: list[OddsLine] = field(default_factory=list)
     veto: list[VetoStep] = field(default_factory=list)
     veto_actors: dict[str, int] = field(default_factory=dict)  # veto label ('PRX') -> team 1 or 2
@@ -371,8 +377,6 @@ def parse_match_detail(html: str, vlr_match_id: int) -> MatchDetail:
         detail.event_name = _text(event_link.select_one("div > div"))
         detail.series = _text(event_link.select_one(".match-header-event-series"))
         detail.is_international = is_international_event(detail.event_name)
-        detail.event_tier = classify_event_tier(detail.event_name)
-        detail.stakes = classify_stakes(detail.series)
 
     for note in soup.select(".match-header-vs-note"):
         text = _text(note) or ""

@@ -94,9 +94,6 @@ def ingest_match(
         team1_score=team1_maps if detail.maps else None,
         team2_score=team2_maps if detail.maps else None,
         is_international=detail.is_international,
-        series=detail.series,
-        event_tier=detail.event_tier,
-        stakes=detail.stakes,
     )
 
     pick_team = {1: team1_id, 2: team2_id}

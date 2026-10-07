@@ -34,9 +34,6 @@ CREATE TABLE IF NOT EXISTS matches (
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
     is_international INTEGER,
-    series TEXT,              -- stage text, e.g. "Playoffs: Lower Round 2"
-    event_tier INTEGER,       -- 2 international / 1 regional league / 0 other (see valpredictor.stage)
-    stakes INTEGER,           -- 0 regular season / 1 playoffs / 2 elimination / 3 final
     scraped_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(match_date);

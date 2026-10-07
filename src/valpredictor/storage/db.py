@@ -26,15 +26,11 @@ _MAP_SIDE_COLUMNS = (
 )
 
 
-_MATCH_STAGE_COLUMNS = (("series", "TEXT"), ("event_tier", "INTEGER"), ("stakes", "INTEGER"))
-
-
 def _migrate(conn: sqlite3.Connection) -> None:
-    for table, columns in (("maps", _MAP_SIDE_COLUMNS), ("matches", _MATCH_STAGE_COLUMNS)):
-        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-        for name, sql_type in columns:
-            if name not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(maps)")}
+    for name, sql_type in _MAP_SIDE_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE maps ADD COLUMN {name} {sql_type}")
     conn.commit()
 
 
@@ -127,9 +123,6 @@ def upsert_match(
     team1_score: int | None,
     team2_score: int | None,
     is_international: bool | None,
-    series: str | None = None,
-    event_tier: int | None = None,
-    stakes: int | None = None,
 ) -> int:
     match_date = None
     if unix_timestamp_ms:
@@ -149,14 +142,13 @@ def upsert_match(
             UPDATE matches SET
                 match_url = ?, event_id = ?, match_date = ?, unix_timestamp_ms = ?,
                 team1_id = ?, team2_id = ?, best_of = ?, team1_score = ?, team2_score = ?,
-                winner_team_id = ?, is_international = ?, series = ?, event_tier = ?, stakes = ?,
-                scraped_at = ?
+                winner_team_id = ?, is_international = ?, scraped_at = ?
             WHERE id = ?
             """,
             (
                 match_url, event_id, match_date, unix_timestamp_ms, team1_id, team2_id,
                 best_of, team1_score, team2_score, winner_team_id, is_international_int,
-                series, event_tier, stakes, scraped_at, row["id"],
+                scraped_at, row["id"],
             ),
         )
         return row["id"]
@@ -166,13 +158,13 @@ def upsert_match(
         INSERT INTO matches (
             vlr_id, match_url, event_id, match_date, unix_timestamp_ms,
             team1_id, team2_id, best_of, team1_score, team2_score,
-            winner_team_id, is_international, series, event_tier, stakes, scraped_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            winner_team_id, is_international, scraped_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             vlr_id, match_url, event_id, match_date, unix_timestamp_ms,
             team1_id, team2_id, best_of, team1_score, team2_score,
-            winner_team_id, is_international_int, series, event_tier, stakes, scraped_at,
+            winner_team_id, is_international_int, scraped_at,
         ),
     )
     return cur.lastrowid
