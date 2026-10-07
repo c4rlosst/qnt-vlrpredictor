@@ -47,6 +47,7 @@
   a { color: var(--b); }
   .grid { display: grid; gap: 12px; }
   footer { color: var(--muted); font-size: 12px; margin-top: 32px; }
+  tr.struck td { text-decoration: line-through; color: var(--muted); opacity: .6; }
   .statusbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
   .statusbar .msg { flex-basis: 100%; margin: 0; }
   .spinner { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 2px solid var(--line); border-top-color: var(--a); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
@@ -117,12 +118,20 @@ function probBar(team1, team2, p1) {
     el("div", { class: "names" }, el("span", { text: team1 }), el("span", { text: team2 })), bar);
 }
 
-function scoreTable(pred) {
+// `now` = the series score of a match already under way ([team1 maps, team2 maps]) or null.
+// The probabilities are the PRE-GAME ones and are never updated; scores that can no longer
+// happen are only struck through so the table doesn't contradict the scoreboard.
+function scoreTable(pred, now) {
   const rows = Object.entries(pred.score_distribution).sort((a, b) => b[1] - a[1]);
-  const t = el("table", {}, el("tr", {}, el("th", { text: "Exact score" }), el("th", { class: "num", text: "Probability" })));
+  const t = el("table", {}, el("tr", {}, el("th", { text: now ? "Exact score (pre-game estimate)" : "Exact score" }),
+    el("th", { class: "num", text: "Probability" })));
   for (const [score, p] of rows) {
-    const [a, b] = score.split("-");
-    t.append(el("tr", {}, el("td", { text: `${pred.team1} ${a}–${b} ${pred.team2}` }), el("td", { class: "num", text: pct(p) })));
+    const [a, b] = score.split("-").map(Number);
+    const impossible = now && (a < now[0] || b < now[1]);
+    const tr = el("tr", { class: impossible ? "struck" : "" },
+      el("td", { text: `${pred.team1} ${a}–${b} ${pred.team2}${impossible ? "  (no longer possible)" : ""}` }),
+      el("td", { class: "num", text: pct(p) }));
+    t.append(tr);
   }
   return t;
 }
@@ -174,13 +183,21 @@ function scenarioTables(pred) {
   return wrap;
 }
 
-function renderPrediction(pred) {
+function startedBanner(pred, now) {
+  const lead = now[0] === now[1] ? "level" : `${now[0] > now[1] ? pred.team1 : pred.team2} lead`;
+  return el("p", { class: "meta", style: "color: var(--a)", text:
+    `This match has started (${pred.team1} ${now[0]}–${now[1]} ${pred.team2} in maps, ${lead}). ` +
+    "Everything below is the estimate made before the first round: it is not updated for the score." });
+}
+
+function renderPrediction(pred, now) {
   const last = Math.floor(pred.best_of / 2) + 1;
   return el("div", { class: "match" },
+    now ? startedBanner(pred, now) : null,
     probBar(pred.team1, pred.team2, pred.team1_win_prob),
     el("p", { class: "meta", text: `Bo${pred.best_of} · ${pred.mode}` +
       (pred.p_distance == null ? "" : ` · goes to a deciding map (${last}-${last - 1}): ${pct(pred.p_distance)}`) }),
-    contextTable(pred), pred.scenarios ? scenarioTables(pred) : null, mapTable(pred), scoreTable(pred));
+    contextTable(pred), pred.scenarios ? scenarioTables(pred) : null, mapTable(pred), scoreTable(pred, now));
 }
 
 async function api(path) {
@@ -280,7 +297,10 @@ async function loadUpcoming(force, quiet) {
       if (m.prediction) {
         const lines = [`Bo${m.prediction.best_of} · ${basis}`];
         if (m.market) lines.push(`Bookmaker pre-match line: ${m.team1} ${pct(m.market.team1)} / ${m.team2} ${pct(m.market.team2)}`);
-        if (started) lines.push("Already started: this is the pre-game estimate, the score is not used.");
+        if (started && m.maps_score) {
+          lines.push(`Started: ${m.team1} ${m.maps_score[0]}–${m.maps_score[1]} ${m.team2} in maps. ` +
+            "The bar above is the estimate made before the game; it is not updated for the score.");
+        }
         body = el("div", {}, probBar(m.team1, m.team2, m.prediction.team1_win_prob),
           ...lines.map((t) => el("p", { class: "meta", text: t })));
       } else {
@@ -292,7 +312,7 @@ async function loadUpcoming(force, quiet) {
         const show = () => {
           $("team1").value = m.team1; $("team2").value = m.team2; $("best_of").value = String(m.prediction.best_of);
           $("error").classList.add("hidden");
-          $("result").replaceChildren(renderPrediction(m.prediction));
+          $("result").replaceChildren(renderPrediction(m.prediction, started && m.maps_score ? m.maps_score : null));
           $("result").classList.remove("hidden");
           window.scrollTo({ top: 0, behavior: "smooth" });
         };

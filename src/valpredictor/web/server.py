@@ -186,6 +186,7 @@ class App:
                     "team2": r.team2_name,
                     "note": it.note,
                     "veto_posted": it.veto_posted,
+                    "maps_score": [r.team1_score, r.team2_score] if r.status == "live" else None,
                     "market": it.market,
                     "prediction": result_to_json(it.result) if it.result else None,
                 }
