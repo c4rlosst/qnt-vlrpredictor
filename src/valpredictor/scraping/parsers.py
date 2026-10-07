@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup, Tag
 
+from valpredictor.stage import classify_event_tier, classify_stakes
+
 logger = logging.getLogger(__name__)
 
 _MATCH_ID = re.compile(r"^/(\d+)/")
@@ -28,20 +30,12 @@ _PLAYER_ID = re.compile(r"/player/(\d+)/")
 _BEST_OF = re.compile(r"\bBo(\d)\b", re.IGNORECASE)
 _VETO_STEP = re.compile(r"^(?P<team>.+?)\s+(?P<action>ban|pick)\s+(?P<map>\S+)$", re.IGNORECASE)
 _VETO_REMAINS = re.compile(r"^(?P<map>\S+)\s+remains$", re.IGNORECASE)
-_INTERNATIONAL_EVENT = re.compile(
-    r"\bMasters\b|\bValorant Champions\b|\bEsports World Cup\b|\bLock//In\b", re.IGNORECASE
-)
 
 
 def is_international_event(event_name: str | None) -> bool | None:
-    """Event-name heuristic: Masters / Champions / EWC are international LANs.
-    Anything else is reported as not-international (False), which is a
-    simplification — some regional finals are LAN too."""
-    if not event_name:
-        return None
-    if re.search(r"qualifier", event_name, re.IGNORECASE):
-        return False  # regional qualifiers for an international event are not themselves international
-    return bool(_INTERNATIONAL_EVENT.search(event_name))
+    """Masters / Champions / Esports World Cup (not their regional qualifiers)."""
+    tier = classify_event_tier(event_name)
+    return None if tier is None else tier == 2
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -169,6 +163,8 @@ class MapResult:
     picked_by: int | None  # 1 or 2 for the picking team; None for the decider
     team1_sides: TeamSides | None = None
     team2_sides: TeamSides | None = None
+    team1_comp: str | None = None  # the five agents played, sorted and comma-joined, e.g. "fade,jett,omen,sova,viper"
+    team2_comp: str | None = None
 
 
 @dataclass
@@ -185,6 +181,8 @@ class MatchDetail:
     best_of: int | None = None
     status: str | None = None  # "final" | "upcoming" | "live"
     is_international: bool | None = None
+    event_tier: int | None = None  # see valpredictor.stage
+    stakes: int | None = None
     veto: list[VetoStep] = field(default_factory=list)
     maps: list[MapResult] = field(default_factory=list)
     team1_lineup: list[tuple[str, int | None]] = field(default_factory=list)
@@ -227,6 +225,21 @@ def _parse_lineups(soup: BeautifulSoup) -> tuple[list, list]:
         lineups.append(players)
     lineups += [[]] * (2 - len(lineups))
     return lineups[0], lineups[1]
+
+
+def _parse_comps(game: Tag) -> tuple[str | None, str | None]:
+    """Each team's five agents on one map, from the per-map player tables
+    (first table = team 1). None unless exactly five agents are listed."""
+    comps: list[str | None] = []
+    for table in game.select(".ovw-table")[:2]:
+        agents = []
+        for row in table.select(".ovw-row:not(.mod-head)"):
+            img = row.select_one(".ovw-cell.mod-agents img[alt]")
+            if img is not None and img.get("alt"):
+                agents.append(img["alt"].strip().lower())
+        comps.append(",".join(sorted(agents)) if len(agents) == 5 else None)
+    comps += [None] * (2 - len(comps))
+    return comps[0], comps[1]
 
 
 def _parse_team_sides(team_div: Tag) -> TeamSides | None:
@@ -284,10 +297,12 @@ def _parse_maps(soup: BeautifulSoup, veto: list[VetoStep], team1: str | None, te
             sides = [None, None]
         sides += [None] * (2 - len(sides))
 
+        comp1, comp2 = _parse_comps(game)
         maps.append(
             MapResult(
                 map_order=order, map_name=map_name, team1_score=scores[0], team2_score=scores[1],
                 picked_by=picked_by, team1_sides=sides[0], team2_sides=sides[1],
+                team1_comp=comp1, team2_comp=comp2,
             )
         )
     return maps
@@ -323,6 +338,8 @@ def parse_match_detail(html: str, vlr_match_id: int) -> MatchDetail:
         detail.event_name = _text(event_link.select_one("div > div"))
         detail.series = _text(event_link.select_one(".match-header-event-series"))
         detail.is_international = is_international_event(detail.event_name)
+        detail.event_tier = classify_event_tier(detail.event_name)
+        detail.stakes = classify_stakes(detail.series)
 
     for note in soup.select(".match-header-vs-note"):
         text = _text(note) or ""

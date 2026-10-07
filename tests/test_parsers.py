@@ -126,6 +126,43 @@ def test_parse_map_sides_with_overtime():
     assert (m.team2_sides.first_side, m.team2_sides.atk_won, m.team2_sides.def_won, m.team2_sides.ot_won) == ("def", 8, 4, 2)
 
 
+def _player_rows(agents):
+    return "".join(
+        f'<div class="ovw-row"><div class="ovw-cell mod-player"><a href="/player/{i}/p{i}">'
+        f'<div class="ovw-player-name">p{i}</div></a></div><div class="ovw-cell mod-agents"><div class="ovw-agents">'
+        f'<span class="stats-sq mod-agent small"><img src="/a/{a}.png" alt="{a}" title="{a.title()}"></span>'
+        f"</div></div></div>"
+        for i, a in enumerate(agents)
+    )
+
+
+def _map_with_comps(team1_agents, team2_agents):
+    head = '<div class="ovw-row mod-head"><div class="ovw-th mod-player"></div></div>'
+    return (
+        '<div class="vm-stats-game" data-game-id="1"><div class="vm-stats-game-header">'
+        '<div class="team"><div class="score mod-win">13</div><div><div class="team-name">A</div>'
+        '<span class="mod-ct">5</span> / <span class="mod-t">8</span> / <span class="mod-ot">0</span></div></div>'
+        '<div class="map"><div class="map-name">Lotus</div></div>'
+        '<div class="team mod-right"><div><div class="team-name">B</div><span class="mod-t">7</span> / '
+        '<span class="mod-ct">4</span> / <span class="mod-ot">0</span></div><div class="score">11</div></div></div>'
+        f'<div class="ovw-table">{head}{_player_rows(team1_agents)}</div>'
+        f'<div class="ovw-table">{head}{_player_rows(team2_agents)}</div></div>'
+    )
+
+
+def test_parse_agent_compositions():
+    html = _map_with_comps(["viper", "jett", "omen", "sova", "fade"], ["raze", "vyse", "fade", "omen", "viper"])
+    (m,) = parse_match_detail(f"<html><body>{html}</body></html>", vlr_match_id=1).maps
+    assert m.team1_comp == "fade,jett,omen,sova,viper"   # sorted, so the same five agents always match
+    assert m.team2_comp == "fade,omen,raze,viper,vyse"
+
+
+def test_incomplete_composition_is_none():
+    html = _map_with_comps(["viper", "jett", "omen", "sova"], ["raze", "vyse", "fade", "omen", "viper"])
+    (m,) = parse_match_detail(f"<html><body>{html}</body></html>", vlr_match_id=1).maps
+    assert m.team1_comp is None and m.team2_comp == "fade,omen,raze,viper,vyse"
+
+
 def test_inconsistent_starting_sides_are_discarded():
     both_attack_first = _OT_MAP.replace('<span class="mod-ct">4</span> / <span class="mod-t">8</span> / <span class="mod-ot">2</span>',
                                        '<span class="mod-t">4</span> / <span class="mod-ct">8</span> / <span class="mod-ot">2</span>')

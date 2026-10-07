@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS matches (
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
     is_international INTEGER,
+    series TEXT,              -- stage text, e.g. "Playoffs: Lower Round 2"
+    event_tier INTEGER,       -- 2 international / 1 regional league / 0 other (see valpredictor.stage)
+    stakes INTEGER,           -- 0 regular season / 1 playoffs / 2 elimination / 3 final
     scraped_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(match_date);
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS maps (
     team1_start_side TEXT,    -- 'atk' | 'def': the side team1 started the map on
     team1_atk_won INTEGER, team1_def_won INTEGER, team1_ot_won INTEGER,
     team2_atk_won INTEGER, team2_def_won INTEGER, team2_ot_won INTEGER,
+    team1_comp TEXT, team2_comp TEXT,   -- the five agents played, sorted and comma-joined
     UNIQUE(match_id, map_order)
 );
 CREATE INDEX IF NOT EXISTS idx_maps_match ON maps(match_id);

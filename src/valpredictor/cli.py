@@ -36,6 +36,7 @@ from valpredictor.models.map_model import (
 from valpredictor.models.predict import TeamNotFoundError, format_prediction, predict_match, result_to_json
 from valpredictor.scraping.client import VLRClient
 from valpredictor.scraping.ingest import reparse_from_cache, run_backfill, scan_events
+from valpredictor.stage import STAGE_CHOICES
 from valpredictor.storage.db import get_connection
 from valpredictor.upcoming import predict_upcoming
 
@@ -233,10 +234,14 @@ def _load_model_or_exit(ctx, model_path: str | None):
 @click.option("--maps", default=None, help="comma-separated maps in play order if the veto is known, e.g. Lotus,Summit,Abyss")
 @click.option("--picks", default=None, help='who picked which map, e.g. "Lotus:T1,Summit:NRG" (unlisted = decider)')
 @click.option("--international", is_flag=True, default=False, help="treat as a Masters/Champions-level event")
+@click.option(
+    "--stage", type=click.Choice(list(STAGE_CHOICES)), default=None,
+    help="what is at stake: regular season, playoffs, elimination (lower bracket / decider) or a final",
+)
 @click.option("--model", "model_path", default=None)
 @click.option("--json", "as_json", is_flag=True, default=False)
 @click.pass_context
-def predict_cmd(ctx, team1, team2, best_of, maps, picks, international, model_path, as_json):
+def predict_cmd(ctx, team1, team2, best_of, maps, picks, international, stage, model_path, as_json):
     """Predict one matchup: winner probability and map-score distribution."""
     conn = get_connection(_db_path(ctx))
     model = _load_model_or_exit(ctx, model_path)
@@ -251,7 +256,8 @@ def predict_cmd(ctx, team1, team2, best_of, maps, picks, international, model_pa
     try:
         result = predict_match(
             conn, model, team1, team2, best_of=best_of, maps=map_list, picks=picks_dict,
-            is_international=international or None,
+            is_international=international or None, event_tier=2 if international else 1,
+            stakes=STAGE_CHOICES.get(stage),
         )
     except TeamNotFoundError as exc:
         click.echo(str(exc), err=True)

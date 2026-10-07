@@ -40,18 +40,25 @@ features:
   recent_days_congestion: 14
 
 model:
+  # Deliberately small and heavily regularised: with ~2k maps a flexible model just fits noise
+  # (backtested on the full season: this ties plain Elo, the default 31-leaf setup was worse).
   lightgbm_params:
     objective: "binary"
     metric: "binary_logloss"
-    learning_rate: 0.05
-    num_leaves: 31
-    min_data_in_leaf: 20
-    feature_fraction: 0.8
+    learning_rate: 0.03
+    num_leaves: 7
+    min_data_in_leaf: 40
+    feature_fraction: 0.7
+    lambda_l2: 10.0
     bagging_fraction: 0.8
     bagging_freq: 5
     verbose: -1
-  num_boost_round: 500
+  num_boost_round: 400
   # recent matches count more when training: a row this many days older than
   # the newest one gets half the weight (null = all rows equal)
   recency_half_life_days: 90
+  # maps in a series share one team-strength shock (logit sd); scripts/fit_series_tau.py finds ~0.6
+  # best on real series (suggestive, p ~ 0.07) and it matches how often Bo3s go to a 3rd map.
+  # 0 = treat maps as independent
+  series_strength_sd: 0.6
   early_stopping_rounds: 30

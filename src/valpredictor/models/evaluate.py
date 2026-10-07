@@ -56,7 +56,9 @@ def walk_forward_backtest(
     (e.g. a logistic regression) be scored on exactly the same folds; the
     default trains the LightGBM map model."""
     cfg = config or load_config()
-    df = model_df.sort_values("match_date").reset_index(drop=True)
+    # keep the caller's row labels: predictions come back indexed by them, so callers can
+    # join them to `model_df` (`model_df.loc[pred.index]`) without any re-alignment
+    df = model_df.sort_values("match_date", kind="stable")
     dates = sorted(df["match_date"].unique())
     if len(dates) < 10:
         raise ValueError("not enough distinct match dates to backtest meaningfully")

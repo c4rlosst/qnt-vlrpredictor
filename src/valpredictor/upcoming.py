@@ -62,6 +62,7 @@ def predict_upcoming(
             result = predict_match(
                 conn, model, r.team1_name, r.team2_name, best_of=detail.best_of or 3,
                 maps=maps or None, picks=picks or None, is_international=detail.is_international, state=state,
+                event_tier=detail.event_tier, stakes=detail.stakes,
             )
         except TeamNotFoundError as exc:
             out.append(UpcomingPrediction(row=r, detail=detail, note=str(exc)))

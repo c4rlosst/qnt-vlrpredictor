@@ -4,8 +4,12 @@ match-winner probability + map-score distribution via combinatorics.
 
 Two modes:
   - post-veto: the maps (and who picked them) are known -> one model call per map.
-  - pre-veto:  maps unknown -> the model is evaluated on every map in the
-    current pool and averaged by how often each map has been played lately.
+  - pre-veto:  the veto is simulated (each team bans its worst maps and picks
+    its best) for both possible veto orders and the two outcomes are averaged.
+
+The series maths shares one team-strength shock across a series' maps
+(`model.series_strength_sd`), because maps in a series are positively
+correlated; see models/combinatorics.py.
 """
 
 from __future__ import annotations
@@ -23,8 +27,9 @@ from valpredictor.features.build_features import (
     replay,
     snapshot_pair_to_model_row,
 )
-from valpredictor.models.combinatorics import match_win_probability, score_distribution
+from valpredictor.models.combinatorics import match_win_probability, p_distance, shared_score_distribution
 from valpredictor.models.map_model import predict_proba
+from valpredictor.models.veto import simulate_veto, trim_pool
 from valpredictor.storage.db import find_team_id_by_name
 
 POOL_LOOKBACK_DAYS = 120
@@ -65,19 +70,20 @@ def _map_probs(
     map_names: list[str],
     pick_flags: list[int],
     best_of: int,
-    is_international: bool | None,
+    ctx: dict,
     as_of: dt.date,
 ) -> list[float]:
     """P(team1 wins each map). Evaluated in both team orders and averaged, so
-    the result is exactly antisymmetric (P(A beats B) == 1 - P(B beats A))."""
+    the result is exactly antisymmetric (P(A beats B) == 1 - P(B beats A)).
+    `ctx` carries the match context: is_international, event_tier, stakes."""
     h2h_rate, h2h_n = state.h2h.win_rate(team1_id, team2_id)
     forward, mirrored = [], []
     for map_name, flag in zip(map_names, pick_flags):
         s1 = current_team_snapshot(state, team1_id, map_name, as_of)
         s2 = current_team_snapshot(state, team2_id, map_name, as_of)
         common = dict(
-            best_of=best_of, is_international=is_international, map_name=map_name, h2h_n=h2h_n,
-            map_atk_bias=state.side.map_atk_bias(map_name),
+            best_of=best_of, map_name=map_name, h2h_n=h2h_n,
+            map_atk_bias=state.side.map_atk_bias(map_name), **ctx,
         )
         forward.append(
             snapshot_pair_to_model_row(s1, s2, h2h_team1_rate=h2h_rate, team1_pick=flag, **common)
@@ -114,6 +120,11 @@ def _resolve_team(conn: sqlite3.Connection, name: str) -> int:
     return team_id
 
 
+def _pick_flags(maps: list[str], picked_by: dict[str, int]) -> list[int]:
+    """+1 if team 1 picked the map, -1 if team 2 did, 0 for the decider."""
+    return [{1: 1, 2: -1}.get(picked_by.get(m, 0), 0) for m in maps]
+
+
 def predict_match(
     conn: sqlite3.Connection,
     model: lgb.Booster,
@@ -125,42 +136,68 @@ def predict_match(
     is_international: bool | None = None,
     config: dict | None = None,
     state: ReplayState | None = None,
+    event_tier: int | None = None,
+    stakes: int | None = None,
 ) -> dict:
     cfg = config or load_config()
     team1_id = _resolve_team(conn, team1_name)
     team2_id = _resolve_team(conn, team2_name)
+    tau = float(cfg.get("model", {}).get("series_strength_sd", 0.0))
 
     state = state or replay(conn, cfg)
     today = dt.date.today()
     picks = picks or {}
     pool = None
+    scenarios = None
+    if event_tier is None and is_international:
+        event_tier = 2
+    ctx = dict(is_international=is_international, event_tier=event_tier, stakes=stakes)
 
     if maps:
-        flags = []
+        picked_by = {}
         for map_name in maps:
             picker = (picks.get(map_name) or "").strip().lower()
-            flags.append(1 if picker == team1_name.strip().lower() else (-1 if picker == team2_name.strip().lower() else 0))
-        map_probs = _map_probs(state, model, team1_id, team2_id, maps, flags, best_of, is_international, today)
+            if picker == team1_name.strip().lower():
+                picked_by[map_name] = 1
+            elif picker == team2_name.strip().lower():
+                picked_by[map_name] = 2
+        map_probs = _map_probs(
+            state, model, team1_id, team2_id, maps, _pick_flags(maps, picked_by), best_of, ctx, today
+        )
         # a Bo3 veto can list fewer maps than slots only if the series can't go the distance
         while len(map_probs) < best_of:
             map_probs.append(map_probs[-1])
+        dist = shared_score_distribution(map_probs, best_of, tau)
         mode = "post-veto"
     else:
-        weights = active_map_pool(conn, today)
+        weights = trim_pool(active_map_pool(conn, today))
         if not weights:
             raise ValueError("no maps in the database to build a pre-veto estimate from")
         pool_maps = list(weights)
-        per_map = _map_probs(
-            state, model, team1_id, team2_id, pool_maps, [0] * len(pool_maps), best_of, is_international, today
-        )
-        avg = sum(weights[m] * p for m, p in zip(pool_maps, per_map))
-        map_probs = [avg] * best_of
-        pool = {m: (weights[m], p) for m, p in zip(pool_maps, per_map)}
-        maps = [f"map{i + 1} (pool average)" for i in range(best_of)]
-        mode = "pre-veto (map-pool average)"
+        neutral = _map_probs(state, model, team1_id, team2_id, pool_maps, [0] * len(pool_maps), best_of, ctx, today)
+        by_map = dict(zip(pool_maps, neutral))
+        pool = {m: (weights[m], by_map[m]) for m in pool_maps}
 
-    dist = score_distribution(map_probs, best_of)
-    team1_win_prob = match_win_probability(map_probs, best_of)
+        # play out the veto for both possible first-bans and average the two series
+        scenarios, dists = [], []
+        for first_team in (1, 2):
+            order, picked_by = simulate_veto(by_map, best_of, first_team)
+            probs = _map_probs(
+                state, model, team1_id, team2_id, order, _pick_flags(order, picked_by), best_of, ctx, today
+            )
+            while len(probs) < best_of:
+                probs.append(probs[-1])
+            dists.append(shared_score_distribution(probs, best_of, tau))
+            scenarios.append({
+                "first_ban": first_team, "maps": order, "picked_by": [picked_by.get(m, 0) for m in order],
+                "map_probs": probs,
+            })
+        dist = {k: (dists[0].get(k, 0.0) + dists[1].get(k, 0.0)) / 2 for k in set(dists[0]) | set(dists[1])}
+        maps, map_probs = scenarios[0]["maps"], scenarios[0]["map_probs"]
+        mode = "pre-veto (simulated veto)"
+
+    needed = best_of // 2 + 1
+    team1_win_prob = sum(p for (a, b), p in dist.items() if a == needed)
 
     return {
         "team1": team1_name,
@@ -172,12 +209,15 @@ def predict_match(
         "maps": maps,
         "map_probs": map_probs,
         "pool": pool,
+        "scenarios": scenarios,
+        "series_strength_sd": tau,
         "context": {
             "team1": _team_context(state, team1_id, today),
             "team2": _team_context(state, team2_id, today),
         },
         "team1_win_prob": team1_win_prob,
         "team2_win_prob": 1.0 - team1_win_prob,
+        "p_distance": p_distance(dist, best_of),
         "score_distribution": dist,
     }
 
@@ -189,18 +229,21 @@ def result_to_json(result: dict) -> dict:
     out["map_probs"] = [float(p) for p in result["map_probs"]]
     if result.get("pool"):
         out["pool"] = {m: {"weight": float(w), "p_team1": float(p)} for m, (w, p) in result["pool"].items()}
+    if result.get("scenarios"):
+        out["scenarios"] = [{**s, "map_probs": [float(p) for p in s["map_probs"]]} for s in result["scenarios"]]
     return out
 
 
 def format_prediction(result: dict) -> str:
+    t1, t2 = result["team1"], result["team2"]
     lines = [
-        f"{result['team1']} vs {result['team2']}  (Bo{result['best_of']}, {result['mode']})",
+        f"{t1} vs {t2}  (Bo{result['best_of']}, {result['mode']})",
         "",
-        f"  {result['team1']}: {result['team1_win_prob']:.1%}",
-        f"  {result['team2']}: {result['team2_win_prob']:.1%}",
+        f"  {t1}: {result['team1_win_prob']:.1%}",
+        f"  {t2}: {result['team2_win_prob']:.1%}",
         "",
+        "Team context:",
     ]
-    lines.append("Team context:")
     for key in ("team1", "team2"):
         c = result["context"][key]
         form = "n/a" if c["form_10"] is None else f"{c['form_10']:.0%}"
@@ -211,16 +254,30 @@ def format_prediction(result: dict) -> str:
             f" · attack {c['atk_edge_pts']:+.1f} / defence {c['def_edge_pts']:+.1f} pts"
         )
     lines.append("")
-    if result.get("pool"):
-        lines.append(f"Map pool (P({result['team1']} wins), weight):")
+
+    if result.get("scenarios"):
+        lines.append("Simulated veto (each team bans its worst maps, picks its best):")
+        for s in result["scenarios"]:
+            first = result["team1"] if s["first_ban"] == 1 else result["team2"]
+            parts = []
+            for m, picker, p in zip(s["maps"], s["picked_by"], s["map_probs"]):
+                who = {1: f"{t1} pick", 2: f"{t2} pick"}.get(picker, "decider")
+                parts.append(f"{m} ({who}, {t1} {p:.0%})")
+            lines.append(f"  {first} bans first: " + " | ".join(parts))
+    elif result.get("pool"):
+        lines.append(f"Map pool (P({t1} wins), weight):")
         for m, (w, p) in sorted(result["pool"].items(), key=lambda kv: -kv[1][0]):
             lines.append(f"  {m:12s} {p:6.1%}   (weight {w:.0%})")
     else:
-        lines.append(f"Map probabilities (P({result['team1']} wins)):")
+        lines.append(f"Map probabilities (P({t1} wins)):")
         for map_name, p in zip(result["maps"], result["map_probs"]):
             lines.append(f"  {map_name:20s} {p:.1%}")
     lines.append("")
+
+    if result.get("p_distance") is not None:
+        lines.append(f"Goes to a deciding map (a {result['best_of'] // 2 + 1}-{result['best_of'] // 2} series): "
+                     f"{result['p_distance']:.0%}")
     lines.append("Score distribution:")
     for (a, b), p in sorted(result["score_distribution"].items(), key=lambda kv: -kv[1]):
-        lines.append(f"  {result['team1']} {a}-{b} {result['team2']}: {p:.1%}")
+        lines.append(f"  {t1} {a}-{b} {t2}: {p:.1%}")
     return "\n".join(lines)

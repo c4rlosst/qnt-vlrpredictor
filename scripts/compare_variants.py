@@ -31,17 +31,23 @@ from valpredictor.models.evaluate import elo_only_proba, walk_forward_backtest  
 from valpredictor.storage.db import get_connection  # noqa: E402
 
 LR_FEATURES = [
-    "elo_diff", "map_elo_diff", "form_10_diff", "map_winrate_diff", "round_edge_diff",
-    "atk1_vs_def2", "def1_vs_atk2", "map_atk_bias", "roster_continuity_diff", "team1_pick",
+    "elo_diff", "map_elo_diff", "form_5_diff", "form_10_diff", "form_20_diff", "map_winrate_diff",
+    "round_edge_diff", "atk1_vs_def2", "def1_vs_atk2", "roster_continuity_diff", "team1_pick",
+    "rest_days_diff", "congestion_diff",
 ]
 
 
-def logistic_predictor(half_life: float | None, C: float):
+def logistic_predictor(cols: list[str], half_life: float | None, C: float):
+    """Logistic regression on `cols` (raw feature names, plus the derived h2h / stage interactions)."""
+
     def predict(train: pd.DataFrame, test: pd.DataFrame) -> np.ndarray:
         def prep(df):
-            X = df[LR_FEATURES].copy()
+            X = df.reindex(columns=LR_FEATURES).copy()
             X["h2h"] = df["h2h_team1_rate"].fillna(0.5) - 0.5
-            return X.fillna(0.0).to_numpy(dtype=float)
+            # the favourite's edge may be bigger or smaller depending on what's at stake / the event level
+            X["elo_x_regular"] = df["elo_diff"] * (df["stakes"] == 0)
+            X["elo_x_intl"] = df["elo_diff"] * (df["event_tier"] == 2)
+            return X[cols].fillna(0.0).to_numpy(dtype=float)
 
         scaler = StandardScaler().fit(prep(train))
         weights = map_model.recency_weights(train["match_date"], half_life)
@@ -77,14 +83,28 @@ def logloss_rows(y: np.ndarray, p: np.ndarray) -> np.ndarray:
 
 
 def run(table: pd.DataFrame, cfg: dict, folds: int, label: str) -> list[dict]:
-    variants = {
-        "GBM (config)": gbm_predictor(cfg),
-        "GBM no recency weights": gbm_predictor(with_model_params(cfg, recency_half_life_days=None)),
-        "GBM regularised": gbm_predictor(with_model_params(
-            cfg, num_leaves=7, min_data_in_leaf=40, learning_rate=0.03, feature_fraction=0.7, lambda_l2=10.0)),
-        "Logistic (C=0.1)": logistic_predictor(cfg["model"].get("recency_half_life_days"), 0.1),
-        "Logistic (C=1.0)": logistic_predictor(cfg["model"].get("recency_half_life_days"), 1.0),
-    }
+    hl = cfg["model"].get("recency_half_life_days")
+    all_cols = LR_FEATURES + ["h2h", "elo_x_regular", "elo_x_intl"]
+
+    def elo_plus(label: str, *extra: str):
+        return f"Elo + {label}", logistic_predictor(["elo_diff", *extra], hl, 1.0)
+
+    variants = dict([
+        ("Elo calibrated (LR)", logistic_predictor(["elo_diff"], hl, 1.0)),
+        elo_plus("map Elo", "map_elo_diff"),
+        elo_plus("map Elo + map win rate", "map_elo_diff", "map_winrate_diff"),
+        elo_plus("recent form", "form_5_diff", "form_10_diff", "form_20_diff"),
+        elo_plus("sides (atk/def)", "atk1_vs_def2", "def1_vs_atk2"),
+        elo_plus("who picked the map", "team1_pick"),
+        elo_plus("head-to-head", "h2h"),
+        elo_plus("roster continuity", "roster_continuity_diff"),
+        elo_plus("rest / congestion", "rest_days_diff", "congestion_diff"),
+        elo_plus("stage x Elo", "elo_x_regular", "elo_x_intl"),
+        ("All features (LR, C=0.1)", logistic_predictor(all_cols, hl, 0.1)),
+        ("GBM (config)", gbm_predictor(cfg)),
+        ("GBM regularised", gbm_predictor(with_model_params(
+            cfg, num_leaves=7, min_data_in_leaf=40, learning_rate=0.03, feature_fraction=0.7, lambda_l2=10.0))),
+    ])
     rows = []
     for name, predictor in variants.items():
         captured: dict[str, pd.Series] = {}

@@ -7,8 +7,10 @@ Required columns:
     map_order  1, 2, 3 ... within the match
     map        map name, e.g. Lotus
     score1, score2   rounds won by team1 / team2 on that map
-Optional column:
+Optional columns:
     picked_by  team1 or team2's name; leave empty for a decider
+    stage      the stage text vlr.gg shows, e.g. "Playoffs: Lower Round 2" or "Group Stage: Week 3"
+               (turned into the 0-3 stakes level; leave empty if unknown)
 
 The whole file is validated before anything is written, and the import is
 all-or-nothing: if any row is invalid nothing is stored.
@@ -24,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from valpredictor.scraping.parsers import is_international_event
+from valpredictor.stage import classify_event_tier, classify_stakes
 from valpredictor.storage import db
 
 REQUIRED_COLUMNS = ("match_id", "date", "team1", "team2", "best_of", "event", "map_order", "map", "score1", "score2")
@@ -49,6 +52,7 @@ class _Match:
     best_of: int
     event: str
     first_line: int
+    stage: str | None = None
     maps: list[_Map] = field(default_factory=list)
 
 
@@ -120,7 +124,10 @@ def parse_csv(path: Path) -> tuple[list[_Match], list[str]]:
 
             match = matches.get(match_id)
             if match is None:
-                match = matches[match_id] = _Match(match_id, when, row["team1"], row["team2"], best_of, row["event"], line)
+                match = matches[match_id] = _Match(
+                    match_id, when, row["team1"], row["team2"], best_of, row["event"], line,
+                    stage=row.get("stage") or None,
+                )
             else:
                 for label, a, b in (
                     ("team1", match.team1, row["team1"]), ("team2", match.team2, row["team2"]),
@@ -223,6 +230,9 @@ def import_csv(
             team1_score=wins1,
             team2_score=len(maps) - wins1,
             is_international=intl,
+            series=m.stage,
+            event_tier=classify_event_tier(m.event),
+            stakes=classify_stakes(m.stage),
         )
         db.replace_maps(
             conn,
