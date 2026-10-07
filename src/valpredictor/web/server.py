@@ -16,15 +16,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import lightgbm as lgb
-
 from valpredictor.features.build_features import ReplayState, replay
-from valpredictor.models.predict import (
-    TeamNotFoundError,
-    active_map_pool,
-    predict_match,
-    result_to_json,
-)
+from valpredictor.models.elo_model import EloModel
+from valpredictor.models.predict import TeamNotFoundError, predict_match, result_to_json
 from valpredictor.pipeline import refresh
 from valpredictor.scraping.client import VLRClient
 from valpredictor.storage.db import get_connection
@@ -34,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 INDEX_HTML = Path(__file__).with_name("index.html")
 UPCOMING_TTL_SECONDS = 90
-NO_MODEL_MESSAGE = "No trained model yet - click \"Refresh data\" to scrape matches and train one."
+NO_MODEL_MESSAGE = "No model yet - click \"Refresh data\" to scrape matches and fit one."
 
 
 def _iso(ts: float | None) -> str | None:
@@ -45,14 +39,13 @@ class App:
     def __init__(
         self,
         db_path: Path,
-        model: lgb.Booster | None,
+        model: EloModel | None,
         model_path: Path,
         client_factory=VLRClient,
     ):
         self.db_path = Path(db_path)
         self.model = model
         self.model_path = Path(model_path)
-        self.table_path = self.db_path.parent / f"{self.db_path.stem}_training_table.parquet"
         self.client_factory = client_factory
         self.state: ReplayState = replay(get_connection(self.db_path))
         # The schedule fetch (network, ~20s) is serialised on its own client.
@@ -83,8 +76,7 @@ class App:
     def _refresh_worker(self) -> None:
         try:
             result = refresh(
-                get_connection(self.db_path), self.client_factory(), self.model_path, self.table_path,
-                progress=self._progress,
+                get_connection(self.db_path), self.client_factory(), self.model_path, progress=self._progress,
             )
             self.state = result.state  # swap in the fresh state/model; readers just see the new objects
             if result.model is not None:
@@ -120,7 +112,7 @@ class App:
         }
 
     # ---------------------------------------------------------------- data for the page
-    def _require_model(self) -> lgb.Booster:
+    def _require_model(self) -> EloModel:
         if self.model is None:
             raise ValueError(NO_MODEL_MESSAGE)
         return self.model
@@ -149,12 +141,8 @@ class App:
     def predict(self, params: dict[str, str]) -> dict:
         model, state = self._require_model(), self.state
         conn = get_connection(self.db_path)
-        maps = [m.strip() for m in params.get("maps", "").split(",") if m.strip()] or None
         best_of = int(params.get("best_of", "3"))
-        result = predict_match(
-            conn, model, params["team1"], params["team2"], best_of=best_of, maps=maps,
-            is_international=True if params.get("international") == "1" else None, state=state,
-        )
+        result = predict_match(conn, model, params["team1"], params["team2"], best_of=best_of, state=state)
         return result_to_json(result)
 
     def upcoming(self, event: str, force: bool = False) -> list[dict]:
@@ -182,7 +170,6 @@ class App:
                     "team1": r.team1_name,
                     "team2": r.team2_name,
                     "note": it.note,
-                    "veto_posted": it.veto_posted,
                     "maps_score": [r.team1_score, r.team2_score] if r.status == "live" else None,
                     "market": it.market,
                     "prediction": result_to_json(it.result) if it.result else None,
@@ -219,8 +206,6 @@ def _make_handler(app: App):
                     self._json(app.teams())
                 elif url.path == "/api/status":
                     self._json(app.status())
-                elif url.path == "/api/maps":
-                    self._json(active_map_pool(get_connection(app.db_path)))
                 elif url.path == "/api/predict":
                     self._json(app.predict(params))
                 elif url.path == "/api/upcoming":
@@ -251,11 +236,11 @@ def _make_handler(app: App):
 
 
 def serve(
-    db_path: Path, model: lgb.Booster | None, host: str = "127.0.0.1", port: int = 8000,
+    db_path: Path, model: EloModel | None, host: str = "127.0.0.1", port: int = 8000,
     model_path: Path | None = None,
 ) -> None:
     db_path = Path(db_path)
-    model_path = Path(model_path) if model_path else db_path.parent / f"{db_path.stem}_map_model.txt"
+    model_path = Path(model_path) if model_path else db_path.parent / f"{db_path.stem}_elo_model.json"
     app = App(db_path, model, model_path)
     server = ThreadingHTTPServer((host, port), _make_handler(app))
     print(f"valpredictor web UI on http://{host}:{port}  (Ctrl+C to stop)")

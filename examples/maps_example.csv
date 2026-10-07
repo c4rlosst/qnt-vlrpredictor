@@ -1,8 +1,8 @@
-match_id,date,team1,team2,best_of,event,map_order,map,score1,score2,picked_by
-9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,1,Lotus,13,11,T1
-9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,2,Summit,13,7,NRG
-9000002,2026-10-04,FUT Esports,T1,3,Valorant Champions 2026,1,Haven,9,13,FUT Esports
-9000002,2026-10-04,FUT Esports,T1,3,Valorant Champions 2026,2,Ascent,11,13,T1
-9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,1,Lotus,13,10,LOUD
-9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,2,Bind,10,13,Global Esports
-9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,3,Abyss,13,8,
+match_id,date,team1,team2,best_of,event,map_order,map,score1,score2
+9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,1,Lotus,13,11
+9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,2,Summit,13,7
+9000002,2026-10-04,FUT Esports,T1,3,Valorant Champions 2026,1,Haven,9,13
+9000002,2026-10-04,FUT Esports,T1,3,Valorant Champions 2026,2,Ascent,11,13
+9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,1,Lotus,13,10
+9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,2,Bind,10,13
+9000003,2026-10-04,LOUD,Global Esports,3,Valorant Champions 2026,3,Abyss,13,8

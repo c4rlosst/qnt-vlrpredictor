@@ -70,9 +70,6 @@ class VLRClient:
                 time.sleep(remaining)
         self._last_request_ts = time.monotonic()
 
-    def has_cached(self, path_or_url: str) -> bool:
-        return (self.cache_dir / cache_key_for_url(self.full_url(path_or_url))).exists()
-
     def full_url(self, path_or_url: str) -> str:
         if path_or_url.startswith("http"):
             return path_or_url

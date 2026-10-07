@@ -4,12 +4,7 @@
 import datetime as dt
 from pathlib import Path
 
-from valpredictor.scraping.parsers import (
-    is_international_event,
-    parse_match_detail,
-    parse_results_page,
-    parse_veto,
-)
+from valpredictor.scraping.parsers import parse_match_detail, parse_results_page
 from valpredictor.scraping.results import parse_date_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -72,7 +67,6 @@ def test_parse_match_detail_completed_bo3():
     assert d.event_vlr_id == 2766
     assert d.best_of == 3
     assert d.status == "final"
-    assert d.is_international is True
     # 2026-10-07 05:00:00 UTC
     assert d.unix_timestamp_ms == int(dt.datetime(2026, 10, 7, 5, tzinfo=dt.timezone.utc).timestamp() * 1000)
 
@@ -81,57 +75,10 @@ def test_parse_match_detail_completed_bo3():
         ("Lotus", 13, 11),
         ("Summit", 13, 7),
     ]
-    assert [m.picked_by for m in d.maps] == [2, 1]  # T1 picked Lotus, NRG picked Summit
-
-    assert [(s.team, s.action, s.map_name) for s in d.veto][-1] == (None, "remains", "Abyss")
-    assert len(d.veto) == 7
 
     assert [name for name, _ in d.team1_lineup] == ["brawk", "keiko", "mada", "Ethan", "skuba"]
     assert [name for name, _ in d.team2_lineup] == ["BuZz", "Meteor", "iZu", "Munchkin", "stax"]
     assert d.team1_lineup[0] == ("brawk", 2172)
-
-
-def test_parse_map_sides_from_real_fixture():
-    d = parse_match_detail(_read("match_detail.html"), vlr_match_id=754732)
-    lotus, summit = d.maps
-
-    # header "5 / 8" for NRG then "7 / 4" for T1: first number = first-half side
-    assert (lotus.team1_sides.first_side, lotus.team1_sides.def_won, lotus.team1_sides.atk_won) == ("def", 5, 8)
-    assert (lotus.team2_sides.first_side, lotus.team2_sides.atk_won, lotus.team2_sides.def_won) == ("atk", 7, 4)
-    # every first-half round has exactly one winner: 5 (NRG def) + 7 (T1 atk) = 12
-    assert lotus.team1_sides.def_won + lotus.team2_sides.atk_won == 12
-    assert lotus.team1_sides.atk_won + lotus.team2_sides.def_won == 12
-
-    # a 13-7 map only plays 8 second-half rounds
-    assert summit.team1_sides.atk_won + summit.team2_sides.def_won == 8
-    assert summit.team1_sides.ot_won == summit.team2_sides.ot_won == 0
-
-
-_OT_MAP = """
-<div class="vm-stats-game" data-game-id="1"><div class="vm-stats-game-header">
- <div class="team"><div class="score">12 </div><div><div class="team-name">A</div>
-   <span class="mod-t">8</span> / <span class="mod-ct">4</span> / <span class="mod-ot">0</span></div></div>
- <div class="map"><div class="map-name">Lotus</div></div>
- <div class="team mod-right"><div><div class="team-name">B</div>
-   <span class="mod-ct">4</span> / <span class="mod-t">8</span> / <span class="mod-ot">2</span></div>
-   <div class="score mod-win">14</div></div>
-</div></div>"""
-
-
-def test_parse_map_sides_with_overtime():
-    d = parse_match_detail(f"<html><body>{_OT_MAP}</body></html>", vlr_match_id=1)
-    (m,) = d.maps
-    assert (m.team1_score, m.team2_score) == (12, 14)
-    assert (m.team1_sides.first_side, m.team1_sides.atk_won, m.team1_sides.def_won, m.team1_sides.ot_won) == ("atk", 8, 4, 0)
-    assert (m.team2_sides.first_side, m.team2_sides.atk_won, m.team2_sides.def_won, m.team2_sides.ot_won) == ("def", 8, 4, 2)
-
-
-def test_veto_labels_are_tags_and_resolve_to_the_right_team():
-    """vlr.gg's veto text says 'PRX picked Split' while the header says 'Paper Rex'."""
-    d = parse_match_detail(_read("match_with_odds.html"), vlr_match_id=754733)
-    assert (d.team1_name, d.team2_name) == ("Paper Rex", "LOUD")
-    assert d.veto_actors == {"PRX": 1, "LOUD": 2}
-    assert [(s.team, s.action, s.map_name) for s in d.veto][2:4] == [("PRX", "pick", "Split"), ("LOUD", "pick", "Sunset")]
 
 
 def test_parse_pre_match_and_live_odds():
@@ -142,35 +89,7 @@ def test_parse_pre_match_and_live_odds():
     assert all(o.team1_odds > 1 and o.team2_odds > 1 for o in d.odds)
 
 
-def test_inconsistent_starting_sides_are_discarded():
-    both_attack_first = _OT_MAP.replace('<span class="mod-ct">4</span> / <span class="mod-t">8</span> / <span class="mod-ot">2</span>',
-                                       '<span class="mod-t">4</span> / <span class="mod-ct">8</span> / <span class="mod-ot">2</span>')
-    (m,) = parse_match_detail(f"<html><body>{both_attack_first}</body></html>", vlr_match_id=1).maps
-    assert m.team1_sides is None and m.team2_sides is None  # can't both start on attack
-
-
-def test_parse_veto():
-    steps = parse_veto("100 Thieves ban Bind; G2 Esports pick Haven; Team Vitality ban Split; Lotus remains")
-    assert [(s.team, s.action, s.map_name) for s in steps] == [
-        ("100 Thieves", "ban", "Bind"),
-        ("G2 Esports", "pick", "Haven"),
-        ("Team Vitality", "ban", "Split"),
-        (None, "remains", "Lotus"),
-    ]
-    assert parse_veto(None) == []
-    assert parse_veto("") == []
-
-
-def test_is_international_event():
-    assert is_international_event("Valorant Champions 2026") is True
-    assert is_international_event("Valorant Masters Toronto 2026") is True
-    assert is_international_event("Champions Tour 2026: Americas Stage 1") is False
-    assert is_international_event("Esports World Cup 2026") is True
-    assert is_international_event("Esports World Cup 2026: Americas Qualifier") is False
-    assert is_international_event(None) is None
-
-
 def test_parsers_fail_soft_on_empty_input():
     assert parse_results_page("<html><body></body></html>") == []
     d = parse_match_detail("<html><body></body></html>", vlr_match_id=1)
-    assert d.team1_name is None and d.maps == [] and d.veto == []
+    assert d.team1_name is None and d.maps == []

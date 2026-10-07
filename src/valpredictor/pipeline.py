@@ -1,8 +1,8 @@
 """The "refresh everything" pipeline behind the web UI's Refresh button:
-scrape newly finished matches -> rebuild features -> retrain -> fresh state.
+scrape newly finished matches -> replay history into Elo -> refit the model.
 
-The CLI exposes the same steps one at a time (backfill-results, build-features,
-train); this runs them back to back and reports progress as it goes.
+The CLI exposes the same steps one at a time (backfill-results, train); this
+runs them back to back and reports progress as it goes.
 """
 
 from __future__ import annotations
@@ -14,12 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import lightgbm as lgb
 import pandas as pd
 
 from valpredictor.config import load_config
-from valpredictor.features.build_features import ReplayState, replay, symmetrize, to_model_matrix
-from valpredictor.models.map_model import chronological_holdout_split, save_model, train_map_model
+from valpredictor.features.build_features import ReplayState, replay
+from valpredictor.models.elo_model import EloModel, fit_elo_model
 from valpredictor.scraping.client import VLRClient
 from valpredictor.scraping.ingest import run_backfill
 
@@ -37,7 +36,7 @@ class RefreshResult:
     trained: bool = False
     message: str = ""
     latest_match_date: str | None = None
-    model: lgb.Booster | None = None
+    model: EloModel | None = None
     state: ReplayState | None = None
 
 
@@ -55,7 +54,6 @@ def refresh(
     conn: sqlite3.Connection,
     client: VLRClient,
     model_path: Path,
-    table_path: Path,
     progress: Progress = lambda step, message: None,
     since: dt.date | None = None,
     config: dict | None = None,
@@ -75,28 +73,22 @@ def refresh(
     latest = conn.execute("SELECT MAX(match_date) FROM matches").fetchone()[0]
     result = RefreshResult(new_matches=stats.ingested, total_matches=total, latest_match_date=latest)
 
-    progress("features", f"Rebuilding features from {total} matches ...")
-    state = replay(conn, cfg)  # one chronological pass yields both the training rows and the live state
+    progress("train", f"Rebuilding Elo ratings from {total} matches ...")
+    state = replay(conn, cfg)  # one chronological pass yields both the training rows and the live ratings
     table = pd.DataFrame(state.rows)
     result.maps = len(table)
     result.state = state
     if len(table) < MIN_MAPS_TO_TRAIN:
         result.message = (
             f"Stored {stats.ingested} new matches, but only {len(table)} maps in total: "
-            f"need at least {MIN_MAPS_TO_TRAIN} to train. Run `valpredictor backfill-results` for the full history."
+            f"need at least {MIN_MAPS_TO_TRAIN} to fit the model. "
+            "Run `valpredictor backfill-results` for the full history."
         )
         return result
 
-    matrix = to_model_matrix(symmetrize(table))
-    table_path.parent.mkdir(parents=True, exist_ok=True)
-    matrix.to_parquet(table_path)
-
-    progress("train", f"Training on {len(table)} maps ...")
-    inner, valid = chronological_holdout_split(matrix)
-    model = train_map_model(inner, valid_df=valid if not valid.empty else None, config=cfg)
-    save_model(model, model_path)
-
+    model = fit_elo_model(table, cfg["model"].get("recency_half_life_days"))
+    model.save(model_path)
     result.model = model
     result.trained = True
-    result.message = f"Stored {stats.ingested} new matches; retrained on {len(table)} maps (data through {latest})."
+    result.message = f"Stored {stats.ingested} new matches; refit on {len(table)} maps (data through {latest})."
     return result

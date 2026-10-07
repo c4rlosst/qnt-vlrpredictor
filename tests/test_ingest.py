@@ -44,7 +44,6 @@ def test_ingest_match_populates_all_tables(conn, client):
     assert match["vlr_id"] == 754732
     assert match["best_of"] == 3
     assert (match["team1_score"], match["team2_score"]) == (2, 0)
-    assert match["is_international"] == 1
     assert match["match_date"] == "2026-10-07"
 
     team1 = conn.execute("SELECT * FROM teams WHERE id = ?", (match["team1_id"],)).fetchone()
@@ -58,8 +57,6 @@ def test_ingest_match_populates_all_tables(conn, client):
 
     maps = conn.execute("SELECT * FROM maps WHERE match_id = ? ORDER BY map_order", (match_id,)).fetchall()
     assert [m["map_name"] for m in maps] == ["Lotus", "Summit"]
-    assert maps[0]["picked_by_team_id"] == team2["id"]  # T1 picked Lotus
-    assert maps[1]["picked_by_team_id"] == team1["id"]  # NRG picked Summit
     assert [m["winner_team_id"] for m in maps] == [team1["id"], team1["id"]]
 
     roster = conn.execute(
@@ -67,52 +64,6 @@ def test_ingest_match_populates_all_tables(conn, client):
         (match_id, team1["id"]),
     ).fetchall()
     assert sorted(r["name"] for r in roster) == ["Ethan", "brawk", "keiko", "mada", "skuba"]
-
-
-def test_ingest_stores_side_data(conn, client):
-    match_id = ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)
-    lotus = conn.execute("SELECT * FROM maps WHERE match_id = ? AND map_order = 1", (match_id,)).fetchone()
-    assert lotus["team1_start_side"] == "def"
-    assert (lotus["team1_atk_won"], lotus["team1_def_won"], lotus["team1_ot_won"]) == (8, 5, 0)
-    assert (lotus["team2_atk_won"], lotus["team2_def_won"], lotus["team2_ot_won"]) == (7, 4, 0)
-
-
-def test_reparse_from_cache_backfills_side_data_without_network(conn, client):
-    match_id = ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)
-    conn.execute("UPDATE maps SET team1_start_side = NULL, team1_atk_won = NULL, team2_atk_won = NULL")
-    conn.commit()
-
-    class CachedClient(FakeClient):
-        def has_cached(self, path):
-            return True
-
-    cached = CachedClient(client._html)
-    updated, missing = ingest.reparse_from_cache(conn, cached)
-    assert (updated, missing) == (1, 0)
-    row = conn.execute("SELECT team1_start_side, team1_atk_won FROM maps WHERE match_id = ? AND map_order = 1", (match_id,)).fetchone()
-    assert (row["team1_start_side"], row["team1_atk_won"]) == ("def", 8)
-    assert conn.execute("SELECT COUNT(*) c FROM matches").fetchone()["c"] == 1  # overwritten, not duplicated
-
-    class EmptyCache(FakeClient):
-        def has_cached(self, path):
-            return False
-
-    assert ingest.reparse_from_cache(conn, EmptyCache(client._html)) == (0, 1)
-
-
-def test_old_database_gets_side_columns_added(tmp_path):
-    import sqlite3
-
-    path = tmp_path / "old.db"
-    old = sqlite3.connect(path)
-    old.execute("CREATE TABLE maps (id INTEGER PRIMARY KEY, match_id INTEGER, map_order INTEGER, map_name TEXT,"
-                " team1_score INTEGER, team2_score INTEGER, winner_team_id INTEGER, picked_by_team_id INTEGER)")
-    old.commit()
-    old.close()
-
-    conn = db.get_connection(path)
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(maps)")}
-    assert {"team1_start_side", "team1_atk_won", "team2_def_won", "team2_ot_won"} <= cols
 
 
 def test_ingest_match_is_idempotent(conn, client):

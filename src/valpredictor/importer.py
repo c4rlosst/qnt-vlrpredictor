@@ -7,8 +7,7 @@ Required columns:
     map_order  1, 2, 3 ... within the match
     map        map name, e.g. Lotus
     score1, score2   rounds won by team1 / team2 on that map
-Optional column:
-    picked_by  team1 or team2's name; leave empty for a decider
+Any other columns are ignored.
 
 The whole file is validated before anything is written, and the import is
 all-or-nothing: if any row is invalid nothing is stored.
@@ -23,7 +22,6 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from valpredictor.scraping.parsers import is_international_event
 from valpredictor.storage import db
 
 REQUIRED_COLUMNS = ("match_id", "date", "team1", "team2", "best_of", "event", "map_order", "map", "score1", "score2")
@@ -36,7 +34,6 @@ class _Map:
     name: str
     score1: int
     score2: int
-    picked_by: str | None
     line: int
 
 
@@ -131,7 +128,7 @@ def parse_csv(path: Path) -> tuple[list[_Match], list[str]]:
                         errors.append(
                             f"line {line}: match {match_id} has {label}={b!r} here but {a!r} on line {match.first_line}"
                         )
-            match.maps.append(_Map(order, row["map"], s1, s2, row["picked_by"] or None, line))
+            match.maps.append(_Map(order, row["map"], s1, s2, line))
 
     for m in matches.values():
         _validate_match(m, errors)
@@ -153,8 +150,6 @@ def _validate_match(m: _Match, errors: list[str]) -> None:
     wins1 = wins2 = 0
     decided = False
     for x in sorted(m.maps, key=lambda x: x.order):
-        if x.picked_by and x.picked_by.lower() not in (m.team1.lower(), m.team2.lower()):
-            errors.append(f"line {x.line}: picked_by {x.picked_by!r} is neither {m.team1!r} nor {m.team2!r}")
         if decided:
             errors.append(f"line {x.line}: map {x.order} listed after the series was already decided")
         wins1 += x.score1 > x.score2
@@ -207,22 +202,19 @@ def import_csv(
             continue
 
         t1, t2 = team_id(m.team1), team_id(m.team2)
-        by_name = {m.team1.lower(): t1, m.team2.lower(): t2}
-        intl = is_international_event(m.event)
         maps = sorted(m.maps, key=lambda x: x.order)
         wins1 = sum(x.score1 > x.score2 for x in maps)
         match_pk = db.upsert_match(
             conn,
             vlr_id=m.match_id,
             match_url=None,
-            event_id=db.upsert_event(conn, m.event, None, intl),
+            event_id=db.upsert_event(conn, m.event, None),
             unix_timestamp_ms=int(m.when.timestamp() * 1000),
             team1_id=t1,
             team2_id=t2,
             best_of=m.best_of,
             team1_score=wins1,
             team2_score=len(maps) - wins1,
-            is_international=intl,
         )
         db.replace_maps(
             conn,
@@ -231,7 +223,6 @@ def import_csv(
                 {
                     "map_order": x.order, "map_name": x.name, "team1_score": x.score1, "team2_score": x.score2,
                     "team1_id": t1, "team2_id": t2,
-                    "picked_by_team_id": by_name.get((x.picked_by or "").lower()),
                 }
                 for x in maps
             ],

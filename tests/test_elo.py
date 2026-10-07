@@ -1,4 +1,4 @@
-from valpredictor.features.elo import EloTracker, MapEloTracker, expected_score
+from valpredictor.features.elo import EloTracker, expected_score
 
 
 def test_expected_score_symmetry():
@@ -58,10 +58,3 @@ def test_regress_pulls_rating_toward_the_start():
     assert tracker.regress(1, 0.0) == 1650.0   # no change
     assert tracker.regress(1, 5.0) == 1500.0   # clamped to a full reset
     assert tracker.regress(99, 0.5) == 1500.0  # unseen team stays at the start
-
-
-def test_map_elo_tracks_independently_per_map():
-    tracker = MapEloTracker(initial_rating=1500.0, k_factor=24.0)
-    tracker.update(1, 2, "Mirage", a_won=True)
-    assert tracker.rating(1, "Mirage") > 1500.0
-    assert tracker.rating(1, "Inferno") == 1500.0  # untouched map is independent

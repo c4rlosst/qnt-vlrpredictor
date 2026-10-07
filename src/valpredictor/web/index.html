@@ -57,11 +57,11 @@
 <body>
 <main>
   <h1>Valorant Match Predictor</h1>
-  <p class="sub">Map-level LightGBM model on vlr.gg data. Match odds and score lines come from per-map probabilities.</p>
+  <p class="sub">Elo ratings from vlr.gg results, turned into a per-map win chance, then into match odds and exact scores.</p>
 
   <div class="panel statusbar">
     <div id="status-text" class="meta" style="margin:0">Loading status…</div>
-    <button id="refresh-data" title="Scrape newly finished matches from vlr.gg, rebuild features and retrain the model">Refresh data</button>
+    <button id="refresh-data" title="Scrape newly finished matches from vlr.gg, rebuild the Elo ratings and refit the model">Refresh data</button>
     <p id="refresh-msg" class="meta msg hidden"></p>
   </div>
 
@@ -73,8 +73,6 @@
       <label>Format
         <select id="best_of"><option value="1">Bo1</option><option value="3" selected>Bo3</option><option value="5">Bo5</option></select>
       </label>
-      <label>Maps in play order (optional) <input id="maps" placeholder="Lotus,Summit,Abyss" autocomplete="off"></label>
-      <label class="check"><input id="international" type="checkbox" checked> International event</label>
       <button id="go">Predict</button>
     </div>
     <datalist id="teams"></datalist>
@@ -84,10 +82,10 @@
 
   <h2>Upcoming matches <button id="refresh" class="secondary" style="margin-left:8px;padding:4px 10px">Refresh</button>
     <label class="check" style="display:inline-flex;margin-left:12px;font-weight:400"><input id="auto" type="checkbox" checked>
-      Watch for the veto (re-checks every 2 min)</label></h2>
+      Re-check the schedule every 2 min</label></h2>
   <div id="upcoming" class="grid"><div class="panel">Loading schedule…</div></div>
 
-  <footer>Predictions are model estimates, not betting advice. Data © vlr.gg. Live matches are predicted pre-match and ignore the current score.</footer>
+  <footer>Predictions are model estimates, not betting advice. Data © vlr.gg. Predictions are made before a game starts; the score of a game in progress is never used.</footer>
 </main>
 
 <script>
@@ -129,51 +127,18 @@ function scoreTable(pred, now) {
   return t;
 }
 
-function mapTable(pred) {
-  const t = el("table", {}, el("tr", {},
-    el("th", { text: "Map" }), el("th", { class: "num", text: `P(${pred.team1})` })));
-  if (pred.pool) {
-    const entries = Object.entries(pred.pool).sort((a, b) => b[1].weight - a[1].weight);
-    t.querySelector("tr").append(el("th", { class: "num", text: "Pool weight" }));
-    for (const [m, v] of entries)
-      t.append(el("tr", {}, el("td", { text: m }), el("td", { class: "num", text: pct(v.p_team1) }), el("td", { class: "num", text: pct(v.weight) })));
-  } else {
-    pred.maps.forEach((m, i) => t.append(el("tr", {}, el("td", { text: `${i + 1}. ${m}` }), el("td", { class: "num", text: pct(pred.map_probs[i]) }))));
-  }
-  return t;
-}
-
 function contextTable(pred) {
   const fmt = (v, f) => (v === null || v === undefined ? "n/a" : f(v));
   const t = el("table", {}, el("tr", {},
-    el("th", { text: "Team" }), el("th", { class: "num", text: "Elo" }), el("th", { class: "num", text: "Last 10 maps" }),
-    el("th", { class: "num", text: "Lineup continuity" }), el("th", { class: "num", text: "Same lineup for" }),
-    el("th", { class: "num", text: "Attack / Defence (pts vs avg)" })));
+    el("th", { text: "Team" }), el("th", { class: "num", text: "Elo" }),
+    el("th", { class: "num", text: "Lineup continuity" }), el("th", { class: "num", text: "Same lineup for" })));
   for (const key of ["team1", "team2"]) {
     const c = pred.context[key];
     t.append(el("tr", {}, el("td", { text: pred[key] }), el("td", { class: "num", text: String(c.elo) }),
-      el("td", { class: "num", text: fmt(c.form_10, (v) => (v * 100).toFixed(0) + "%") }),
       el("td", { class: "num", text: fmt(c.roster_continuity, (v) => (v * 100).toFixed(0) + "%") }),
-      el("td", { class: "num", text: fmt(c.days_since_lineup_change, (v) => v + " days") }),
-      el("td", { class: "num", text: `${c.atk_edge_pts >= 0 ? "+" : ""}${c.atk_edge_pts} / ${c.def_edge_pts >= 0 ? "+" : ""}${c.def_edge_pts}` })));
+      el("td", { class: "num", text: fmt(c.days_since_lineup_change, (v) => v + " days") })));
   }
   return t;
-}
-
-function scenarioTables(pred) {
-  const wrap = el("div", {});
-  for (const s of pred.scenarios) {
-    const first = s.first_ban === 1 ? pred.team1 : pred.team2;
-    const t = el("table", {}, el("tr", {}, el("th", { text: `Simulated veto if ${first} bans first` }),
-      el("th", { text: "Picked by" }), el("th", { class: "num", text: `P(${pred.team1})` })));
-    s.maps.forEach((m, i) => {
-      const who = s.picked_by[i] === 1 ? pred.team1 : s.picked_by[i] === 2 ? pred.team2 : "decider";
-      t.append(el("tr", {}, el("td", { text: `${i + 1}. ${m}` }), el("td", { text: who }),
-        el("td", { class: "num", text: pct(s.map_probs[i]) })));
-    });
-    wrap.append(t);
-  }
-  return wrap;
 }
 
 function startedBanner(pred, now) {
@@ -188,9 +153,9 @@ function renderPrediction(pred, now) {
   return el("div", { class: "match" },
     now ? startedBanner(pred, now) : null,
     probBar(pred.team1, pred.team2, pred.team1_win_prob),
-    el("p", { class: "meta", text: `Bo${pred.best_of} · ${pred.mode}` +
+    el("p", { class: "meta", text: `Bo${pred.best_of} · ${pred.team1} wins any single map ${pct(pred.p_map_team1)}` +
       (pred.p_distance == null ? "" : ` · goes to a deciding map (${last}-${last - 1}): ${pct(pred.p_distance)}`) }),
-    contextTable(pred), pred.scenarios ? scenarioTables(pred) : null, mapTable(pred), scoreTable(pred, now));
+    contextTable(pred), scoreTable(pred, now));
 }
 
 async function api(path) {
@@ -207,7 +172,7 @@ async function loadTeams() {
   for (const t of teams) dl.append(el("option", { value: t.name, label: `Elo ${t.elo} · ${t.matches} matches` }));
 }
 
-// ---- data refresh: scrape new matches, rebuild features, retrain (runs on the server)
+// ---- data refresh: scrape new matches, rebuild the Elo ratings, refit (runs on the server)
 let wasRunning = false;
 const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never");
 
@@ -258,7 +223,6 @@ async function predict() {
   try {
     const q = new URLSearchParams({
       team1: $("team1").value.trim(), team2: $("team2").value.trim(), best_of: $("best_of").value,
-      maps: $("maps").value.trim(), international: $("international").checked ? "1" : "0",
     });
     const pred = await api("/api/predict?" + q);
     const box = $("result");
@@ -281,14 +245,13 @@ async function loadUpcoming(force, quiet) {
     if (!items.length) box.append(el("div", { class: "panel", text: "No upcoming Champions matches on the schedule." }));
     for (const m of items) {
       const started = m.status === "live";
-      const basis = m.veto_posted ? "veto posted: predicted from the real maps and picks" : "veto not posted yet: simulated veto";
       const head = el("div", { class: "card-head" },
         el("span", { text: `${m.date || ""} ${m.time || ""} · ${m.series || ""}` }),
         el("span", {}, started ? el("span", { class: "pill live", text: "STARTED" }) : el("span", { class: "pill", text: m.status || "" }), " ",
           el("a", { href: m.url, target: "_blank", rel: "noopener", text: "vlr.gg" })));
       let body;
       if (m.prediction) {
-        const lines = [`Bo${m.prediction.best_of} · ${basis}`];
+        const lines = [`Bo${m.prediction.best_of} · ${m.team1} wins any single map ${pct(m.prediction.p_map_team1)}`];
         if (m.market) lines.push(`Bookmaker pre-match line: ${m.team1} ${pct(m.market.team1)} / ${m.team2} ${pct(m.market.team2)}`);
         if (started && m.maps_score) {
           lines.push(`Started: ${m.team1} ${m.maps_score[0]}–${m.maps_score[1]} ${m.team2} in maps. ` +
@@ -322,11 +285,11 @@ async function loadUpcoming(force, quiet) {
 $("refresh-data").addEventListener("click", startRefresh);
 $("go").addEventListener("click", predict);
 $("refresh").addEventListener("click", () => loadUpcoming(true));
-for (const id of ["team1", "team2", "maps"]) $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") predict(); });
+for (const id of ["team1", "team2"]) $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") predict(); });
 loadTeams().catch((e) => { $("error").textContent = e.message; $("error").classList.remove("hidden"); });
 pollStatus();
 loadUpcoming(false);
-// keep watching: once a veto is posted the card switches from the simulated veto to the real maps and picks
+// keep the bracket current as teams are decided and matches start
 setInterval(() => { if ($("auto").checked && !document.hidden) loadUpcoming(false, true); }, 120000);
 </script>
 </body>

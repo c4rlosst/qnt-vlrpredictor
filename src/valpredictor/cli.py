@@ -2,11 +2,11 @@
 
     valpredictor scan-events --since 2025-10-01       # what events exist? (list pages only)
     valpredictor backfill-results --since 2025-10-01  # scrape + store tier-1 matches
-    valpredictor build-features
-    valpredictor train
-    valpredictor backtest
-    valpredictor predict --team1 "NRG" --team2 "T1" --maps Lotus,Summit,Abyss
-    valpredictor upcoming --event Champions           # predict the live bracket
+    valpredictor train                                 # replay history into Elo and fit the model
+    valpredictor backtest                              # walk-forward check against textbook Elo
+    valpredictor predict --team1 "NRG" --team2 "T1"
+    valpredictor upcoming --event Champions           # predict the upcoming bracket
+    valpredictor serve                                 # the browser UI
 
 Every command accepts `--db PATH` (before the subcommand) to use a database
 other than the default from config.yaml.
@@ -21,21 +21,15 @@ import re
 from pathlib import Path
 
 import click
-import pandas as pd
 
 from valpredictor.config import load_config, resolve_path
-from valpredictor.features.build_features import build_map_training_table, symmetrize, to_model_matrix
+from valpredictor.features.build_features import build_map_table
 from valpredictor.importer import import_csv
-from valpredictor.models.evaluate import walk_forward_backtest
-from valpredictor.models.map_model import (
-    chronological_holdout_split,
-    load_model,
-    save_model,
-    train_map_model,
-)
+from valpredictor.models.elo_model import EloModel, fit_elo_model
+from valpredictor.models.evaluate import COIN_FLIP_LOG_LOSS, walk_forward_backtest
 from valpredictor.models.predict import TeamNotFoundError, format_prediction, predict_match, result_to_json
 from valpredictor.scraping.client import VLRClient
-from valpredictor.scraping.ingest import reparse_from_cache, run_backfill, scan_events
+from valpredictor.scraping.ingest import run_backfill, scan_events
 from valpredictor.storage.db import get_connection
 from valpredictor.upcoming import predict_upcoming
 
@@ -46,14 +40,9 @@ def _db_path(ctx) -> Path:
     return ctx.obj["db_path"] or resolve_path(load_config()["database"]["path"])
 
 
-def _default_training_table_path(ctx) -> Path:
-    p = _db_path(ctx)
-    return p.parent / f"{p.stem}_training_table.parquet"
-
-
 def _default_model_path(ctx) -> Path:
     p = _db_path(ctx)
-    return p.parent / f"{p.stem}_map_model.txt"
+    return p.parent / f"{p.stem}_elo_model.json"
 
 
 def _default_since() -> dt.date:
@@ -115,15 +104,6 @@ def backfill_results(ctx, since: str | None, until: str | None, include: str | N
         click.echo(f"  {n:4d}  {name}")
 
 
-@cli.command("reparse")
-@click.pass_context
-def reparse_cmd(ctx):
-    """Re-read all stored matches from the local page cache (no network
-    requests) to fill in newly parsed fields, e.g. per-side round data."""
-    updated, missing = reparse_from_cache(get_connection(_db_path(ctx)), VLRClient())
-    click.echo(f"re-parsed {updated} matches from the cache ({missing} had no cached page)")
-
-
 @cli.command("import-csv")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--dry-run", is_flag=True, help="validate and report, but write nothing")
@@ -152,41 +132,26 @@ def import_csv_cmd(ctx, path: Path, dry_run: bool, replace: bool):
     for w in result.warnings:
         click.echo(f"warning: {w}")
     if not dry_run and result.matches_imported:
-        click.echo("next: valpredictor build-features && valpredictor train")
-
-
-@cli.command("build-features")
-@click.option("--out", default=None, help="output parquet path")
-@click.pass_context
-def build_features_cmd(ctx, out: str | None):
-    """Replay match history chronologically into the leakage-safe training table."""
-    conn = get_connection(_db_path(ctx))
-    df = build_map_training_table(conn)
-    if df.empty:
-        click.echo("no played maps in the database yet — run backfill-results first", err=True)
-        raise SystemExit(1)
-    matrix = to_model_matrix(symmetrize(df))
-    out_path = resolve_path(out) if out else _default_training_table_path(ctx)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    matrix.to_parquet(out_path)
-    click.echo(f"wrote {len(matrix)} rows ({len(matrix) // 2} maps, symmetrized) to {out_path}")
+        click.echo("next: valpredictor train")
 
 
 @cli.command("train")
-@click.option("--in", "in_path", default=None, help="input parquet path (from build-features)")
-@click.option("--out", default=None, help="output model path")
+@click.option("--out", default=None, help="output model path (JSON)")
 @click.pass_context
-def train_cmd(ctx, in_path: str | None, out: str | None):
-    """Train the map-level LightGBM model, holding out the chronologically
-    last slice of matches for early stopping."""
-    df = pd.read_parquet(resolve_path(in_path) if in_path else _default_training_table_path(ctx))
-    inner_train, inner_valid = chronological_holdout_split(df)
-    model = train_map_model(inner_train, valid_df=inner_valid if not inner_valid.empty else None)
+def train_cmd(ctx, out: str | None):
+    """Replay all stored matches into Elo ratings and fit the model: the one
+    number that turns an Elo gap into a per-map win chance."""
+    cfg = load_config()
+    table = build_map_table(get_connection(_db_path(ctx)), cfg)
+    if table.empty:
+        click.echo("no played maps in the database yet — run backfill-results first", err=True)
+        raise SystemExit(1)
+    model = fit_elo_model(table, cfg["model"].get("recency_half_life_days"))
     out_path = resolve_path(out) if out else _default_model_path(ctx)
-    save_model(model, out_path)
+    model.save(out_path)
     click.echo(
-        f"trained on {len(inner_train)} rows (held out {len(inner_valid)} for early stopping, "
-        f"best_iteration={getattr(model, 'best_iteration', None)}), saved model to {out_path}"
+        f"fitted on {model.trained_on_maps} maps: {model.slope:.3f} logit per 100 Elo points "
+        f"(textbook Elo is 0.576), saved to {out_path}"
     )
 
 
@@ -195,64 +160,50 @@ def _fmt(x):
 
 
 @cli.command("backtest")
-@click.option("--in", "in_path", default=None, help="input parquet path (from build-features)")
 @click.option("--folds", default=5, help="number of walk-forward folds")
 @click.pass_context
-def backtest_cmd(ctx, in_path: str | None, folds: int):
-    """Walk-forward backtest: main model vs elo-only vs naive-form baselines."""
-    df = pd.read_parquet(resolve_path(in_path) if in_path else _default_training_table_path(ctx))
-    results = walk_forward_backtest(df, n_folds=folds)
+def backtest_cmd(ctx, folds: int):
+    """Walk-forward backtest of the fitted Elo model against textbook Elo."""
+    cfg = load_config()
+    results = walk_forward_backtest(build_map_table(get_connection(_db_path(ctx)), cfg), cfg, n_folds=folds)
 
-    click.echo("Per-fold map accuracy (model / elo-only / naive-form):")
-    for fold in results["folds"]:
-        m, e, n = fold["model"], fold["elo_only"], fold["naive_form"]
+    click.echo("Per-fold map accuracy (fitted Elo / textbook Elo):")
+    for f in results["folds"]:
+        c, r = f["calibrated_elo"], f["raw_elo"]
         click.echo(
-            f"  fold {fold['fold']} [{fold['test_start']}..{fold['test_end']}] n={m['n']}: "
-            f"{_fmt(m['accuracy'])} / {_fmt(e['accuracy'])} / {_fmt(n['accuracy'])}"
+            f"  fold {f['fold']} [{f['test_start']}..{f['test_end']}] n={c['n']}: "
+            f"{_fmt(c['accuracy'])} / {_fmt(r['accuracy'])}   (slope {f['slope']:.3f})"
         )
     click.echo("\nOverall (pooled out-of-fold, per map):")
     for name, res in results["overall"].items():
         click.echo(
-            f"  {name:12s} n={res['n']:<6} accuracy={_fmt(res['accuracy'])} "
+            f"  {name:15s} n={res['n']:<6} accuracy={_fmt(res['accuracy'])} "
             f"log_loss={_fmt(res['log_loss'])} brier={_fmt(res['brier'])}"
         )
+    click.echo(f"  (a coin flip has log_loss={COIN_FLIP_LOG_LOSS:.4f})")
 
 
-def _load_model_or_exit(ctx, model_path: str | None):
+def _load_model_or_exit(ctx, model_path: str | None) -> EloModel:
     path = resolve_path(model_path) if model_path else _default_model_path(ctx)
     if not path.exists():
-        click.echo(f"no trained model at {path} — run `train` first", err=True)
+        click.echo(f"no model at {path} — run `train` first", err=True)
         raise SystemExit(1)
-    return load_model(path)
+    return EloModel.load(path)
 
 
 @cli.command("predict")
 @click.option("--team1", required=True)
 @click.option("--team2", required=True)
 @click.option("--best-of", default=3, type=int)
-@click.option("--maps", default=None, help="comma-separated maps in play order if the veto is known, e.g. Lotus,Summit,Abyss")
-@click.option("--picks", default=None, help='who picked which map, e.g. "Lotus:T1,Summit:NRG" (unlisted = decider)')
-@click.option("--international", is_flag=True, default=False, help="treat as a Masters/Champions-level event")
 @click.option("--model", "model_path", default=None)
 @click.option("--json", "as_json", is_flag=True, default=False)
 @click.pass_context
-def predict_cmd(ctx, team1, team2, best_of, maps, picks, international, model_path, as_json):
+def predict_cmd(ctx, team1, team2, best_of, model_path, as_json):
     """Predict one matchup: winner probability and map-score distribution."""
     conn = get_connection(_db_path(ctx))
     model = _load_model_or_exit(ctx, model_path)
-    map_list = [m.strip() for m in maps.split(",")] if maps else None
-    picks_dict = None
-    if picks:
-        picks_dict = {}
-        for pair in picks.split(","):
-            map_name, _, picker = pair.partition(":")
-            if picker:
-                picks_dict[map_name.strip()] = picker.strip()
     try:
-        result = predict_match(
-            conn, model, team1, team2, best_of=best_of, maps=map_list, picks=picks_dict,
-            is_international=international or None,
-        )
+        result = predict_match(conn, model, team1, team2, best_of=best_of)
     except TeamNotFoundError as exc:
         click.echo(str(exc), err=True)
         raise SystemExit(1)
@@ -282,8 +233,15 @@ def upcoming_cmd(ctx, event: str, model_path: str | None):
         if item.result is None:
             click.echo(f"\n{header}\n  {r.team1_name} vs {r.team2_name}: {item.note}")
             continue
-        live = "  (LIVE — prediction ignores the current score)\n" if r.status == "live" else ""
-        click.echo(f"\n{header}\n{live}{format_prediction(item.result)}")
+        started = (
+            f"  (STARTED, {r.team1_score}-{r.team2_score} in maps: this is the pre-game estimate, not updated)\n"
+            if r.status == "live" else ""
+        )
+        market = ""
+        if item.market:
+            market = (f"\nBookmaker pre-match line: {r.team1_name} {item.market['team1']:.1%} / "
+                      f"{r.team2_name} {item.market['team2']:.1%}")
+        click.echo(f"\n{header}\n{started}{format_prediction(item.result)}{market}")
 
 
 @cli.command("serve")
@@ -296,10 +254,11 @@ def serve_cmd(ctx, host: str, port: int, model_path: str | None):
     from valpredictor.web.server import serve
 
     path = resolve_path(model_path) if model_path else _default_model_path(ctx)
-    model = load_model(path) if path.exists() else None
+    model = EloModel.load(path) if path.exists() else None
     if model is None:
-        click.echo("no trained model yet - open the page and click \"Refresh data\" to scrape matches and train one")
+        click.echo("no model yet - open the page and click \"Refresh data\" to scrape matches and fit one")
     serve(_db_path(ctx), model, host, port, model_path=path)
+
 
 if __name__ == "__main__":
     cli()

@@ -43,27 +43,11 @@ def event_matches(name: str | None, include: re.Pattern | None, exclude: re.Patt
     return True
 
 
-def _side_columns(m) -> dict:
-    """Flatten a parsed map's per-team side data into maps-table columns."""
-    s1, s2 = m.team1_sides, m.team2_sides
-    if s1 is None or s2 is None:
-        return {}
-    return {
-        "team1_start_side": s1.first_side,
-        "team1_atk_won": s1.atk_won, "team1_def_won": s1.def_won, "team1_ot_won": s1.ot_won,
-        "team2_atk_won": s2.atk_won, "team2_def_won": s2.def_won, "team2_ot_won": s2.ot_won,
-    }
-
-
-def ingest_match(
-    conn: sqlite3.Connection, client: VLRClient, vlr_match_id: int, match_url: str, force: bool = False
-) -> int | None:
+def ingest_match(conn: sqlite3.Connection, client: VLRClient, vlr_match_id: int, match_url: str) -> int | None:
     """Fetch, parse and store one *completed* match. Returns its local id, or
-    None if the match isn't finished yet / couldn't be fetched. With
-    `force=True` an already-stored match is re-parsed and overwritten (used to
-    backfill newly parsed fields from the page cache)."""
+    None if the match isn't finished yet / couldn't be fetched."""
     existing = conn.execute("SELECT id FROM matches WHERE vlr_id = ?", (vlr_match_id,)).fetchone()
-    if existing and not force:
+    if existing:
         return existing["id"]
 
     try:
@@ -75,7 +59,7 @@ def ingest_match(
     if detail.status != "final":
         return None
 
-    event_id = db.upsert_event(conn, detail.event_name, detail.event_vlr_id, detail.is_international)
+    event_id = db.upsert_event(conn, detail.event_name, detail.event_vlr_id)
     team1_id = db.upsert_team(conn, detail.team1_name, detail.team1_vlr_id)
     team2_id = db.upsert_team(conn, detail.team2_name, detail.team2_vlr_id)
 
@@ -93,10 +77,8 @@ def ingest_match(
         best_of=detail.best_of,
         team1_score=team1_maps if detail.maps else None,
         team2_score=team2_maps if detail.maps else None,
-        is_international=detail.is_international,
     )
 
-    pick_team = {1: team1_id, 2: team2_id}
     db.replace_maps(
         conn,
         match_id,
@@ -108,8 +90,6 @@ def ingest_match(
                 "team2_score": m.team2_score,
                 "team1_id": team1_id,
                 "team2_id": team2_id,
-                "picked_by_team_id": pick_team.get(m.picked_by),
-                **_side_columns(m),
             }
             for m in detail.maps
         ],
@@ -122,21 +102,6 @@ def ingest_match(
 
     conn.commit()
     return match_id
-
-
-def reparse_from_cache(conn: sqlite3.Connection, client: VLRClient) -> tuple[int, int]:
-    """Re-read every stored match from the page cache (no network) and
-    overwrite it, to fill fields added to the parser after it was first
-    scraped. Returns (matches updated, matches whose page was not cached)."""
-    rows = conn.execute("SELECT vlr_id, match_url FROM matches WHERE match_url IS NOT NULL").fetchall()
-    updated = missing = 0
-    for row in tqdm(rows, desc="reparse"):
-        if not client.has_cached(row["match_url"]):
-            missing += 1
-            continue
-        if ingest_match(conn, client, row["vlr_id"], row["match_url"], force=True) is not None:
-            updated += 1
-    return updated, missing
 
 
 def scan_events(client: VLRClient, since: dt.date, until: dt.date | None = None) -> Counter:

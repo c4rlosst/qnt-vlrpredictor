@@ -33,3 +33,4 @@ map_model.txt
 
 .env
 .DS_Store
+.claude/

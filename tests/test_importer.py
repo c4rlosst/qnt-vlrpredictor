@@ -2,17 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from valpredictor.features.build_features import build_map_training_table
+from valpredictor.features.build_features import build_map_table
 from valpredictor.importer import import_csv, parse_csv
 from valpredictor.storage import db
 
-HEADER = "match_id,date,team1,team2,best_of,event,map_order,map,score1,score2,picked_by\n"
+HEADER = "match_id,date,team1,team2,best_of,event,map_order,map,score1,score2\n"
 GOOD = HEADER + (
-    "9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,1,Lotus,13,11,T1\n"
-    "9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,2,Summit,13,7,NRG\n"
-    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,1,Haven,9,13,Paper Rex\n"
-    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,2,Ascent,13,10,LOUD\n"
-    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,3,Bind,13,11,\n"
+    "9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,1,Lotus,13,11\n"
+    "9000001,2026-10-07,NRG,T1,3,Valorant Champions 2026,2,Summit,13,7\n"
+    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,1,Haven,9,13\n"
+    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,2,Ascent,13,10\n"
+    "9000002,2026-10-08,LOUD,Paper Rex,3,Valorant Champions 2026,3,Bind,13,11\n"
 )
 
 
@@ -27,31 +27,27 @@ def _write(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def test_valid_import_populates_matches_maps_and_picks(conn, tmp_path):
+def test_valid_import_populates_matches_and_maps(conn, tmp_path):
     result = import_csv(conn, _write(tmp_path, GOOD))
     assert result.ok and result.matches_imported == 2 and result.maps_imported == 5
     assert sorted(result.new_teams) == ["LOUD", "NRG", "Paper Rex", "T1"]
 
     m1 = conn.execute("SELECT * FROM matches WHERE vlr_id = 9000001").fetchone()
     assert (m1["team1_score"], m1["team2_score"], m1["best_of"], m1["match_date"]) == (2, 0, 3, "2026-10-07")
-    assert m1["is_international"] == 1
     assert conn.execute("SELECT name FROM teams WHERE id = ?", (m1["winner_team_id"],)).fetchone()["name"] == "NRG"
 
     maps = conn.execute(
-        "SELECT map_name, picked_by_team_id FROM maps WHERE match_id = ? ORDER BY map_order", (m1["id"],)
+        "SELECT map_name FROM maps WHERE match_id = ? ORDER BY map_order", (m1["id"],)
     ).fetchall()
-    t1 = conn.execute("SELECT id FROM teams WHERE name = 'T1'").fetchone()["id"]
     assert [r["map_name"] for r in maps] == ["Lotus", "Summit"]
-    assert maps[0]["picked_by_team_id"] == t1
 
     m2 = conn.execute("SELECT id FROM matches WHERE vlr_id = 9000002").fetchone()
-    decider = conn.execute("SELECT picked_by_team_id FROM maps WHERE match_id = ? AND map_order = 3", (m2["id"],)).fetchone()
-    assert decider["picked_by_team_id"] is None
+    assert conn.execute("SELECT COUNT(*) c FROM maps WHERE match_id = ?", (m2["id"],)).fetchone()["c"] == 3
 
 
 def test_imported_data_flows_into_the_feature_table(conn, tmp_path):
     import_csv(conn, _write(tmp_path, GOOD))
-    df = build_map_training_table(conn)
+    df = build_map_table(conn)
     assert len(df) == 5
     assert set(df["map_name"]) == {"Lotus", "Summit", "Haven", "Ascent", "Bind"}
 
@@ -70,7 +66,7 @@ def test_reimport_skips_existing_and_replace_overwrites(conn, tmp_path):
     assert again.matches_imported == 0 and sorted(again.matches_skipped) == [9000001, 9000002]
 
     # correct match 1 so T1 (not NRG) won 2-0
-    fixed = GOOD.replace("Lotus,13,11,T1", "Lotus,11,13,T1").replace("Summit,13,7,NRG", "Summit,7,13,NRG")
+    fixed = GOOD.replace("Lotus,13,11", "Lotus,11,13").replace("Summit,13,7", "Summit,7,13")
     replaced = import_csv(conn, _write(tmp_path, fixed), replace=True)
     assert replaced.matches_imported == 2
     row = conn.execute("SELECT team1_score, team2_score FROM matches WHERE vlr_id = 9000001").fetchone()
@@ -81,18 +77,17 @@ def test_reimport_skips_existing_and_replace_overwrites(conn, tmp_path):
 
 def test_all_problems_reported_and_nothing_imported(conn, tmp_path):
     bad = HEADER + (
-        "9000001,2026-13-45,NRG,T1,3,Champions,1,Lotus,13,11,T1\n"          # bad date
-        "9000002,2026-10-07,NRG,T1,4,Champions,1,Lotus,13,11,\n"            # bad best_of
-        "9000003,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,13,\n"            # tie
-        "9000004,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,11,Sentinels\n"   # picked_by not a team
-        "9000005,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,11,\n"            # series incomplete (1-0 in Bo3)
-        "9000006,2026-10-07,NRG,NRG,1,Champions,1,Lotus,13,11,\n"           # same team
+        "9000001,2026-13-45,NRG,T1,3,Champions,1,Lotus,13,11\n"          # bad date
+        "9000002,2026-10-07,NRG,T1,4,Champions,1,Lotus,13,11\n"          # bad best_of
+        "9000003,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,13\n"          # tie
+        "9000005,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,11\n"          # series incomplete (1-0 in Bo3)
+        "9000006,2026-10-07,NRG,NRG,1,Champions,1,Lotus,13,11\n"         # same team
     )
     result = import_csv(conn, _write(tmp_path, bad))
     text = "\n".join(result.errors)
     assert not result.ok and result.matches_imported == 0
     for needle in ("date must look like", "best_of must be 1, 3 or 5", "cannot end in a tie",
-                   "neither", "series incomplete", "same team"):
+                   "series incomplete", "same team"):
         assert needle in text, needle
     assert conn.execute("SELECT COUNT(*) c FROM matches").fetchone()["c"] == 0
 
@@ -102,33 +97,31 @@ def test_missing_column_and_inconsistent_match(conn, tmp_path):
     assert "missing required column(s)" in result.errors[0]
 
     mixed = HEADER + (
-        "9000001,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,11,\n"
-        "9000001,2026-10-07,NRG,Sentinels,3,Champions,2,Summit,13,7,\n"
+        "9000001,2026-10-07,NRG,T1,3,Champions,1,Lotus,13,11\n"
+        "9000001,2026-10-07,NRG,Sentinels,3,Champions,2,Summit,13,7\n"
     )
     assert any("team2" in e and "line 2" in e for e in import_csv(conn, _write(tmp_path, mixed)).errors)
 
 
 def test_too_many_maps_or_map_after_series_decided(conn, tmp_path):
     text = HEADER + (
-        "1,2026-10-07,A,B,3,Cup,1,Lotus,13,5,\n"
-        "1,2026-10-07,A,B,3,Cup,2,Bind,13,5,\n"
-        "1,2026-10-07,A,B,3,Cup,3,Haven,13,5,\n"
+        "1,2026-10-07,A,B,3,Cup,1,Lotus,13,5\n"
+        "1,2026-10-07,A,B,3,Cup,2,Bind,13,5\n"
+        "1,2026-10-07,A,B,3,Cup,3,Haven,13,5\n"
     )
     assert any("already decided" in e for e in import_csv(conn, _write(tmp_path, text)).errors)
 
 
 def test_similar_team_name_warns_about_typo(conn, tmp_path):
     db.upsert_team(conn, "Paper Rex", vlr_id=5)
-    text = HEADER + (
-        "1,2026-10-07,Paper Rexx,LOUD,1,Cup,1,Lotus,13,5,\n"
-    )
+    text = HEADER + "1,2026-10-07,Paper Rexx,LOUD,1,Cup,1,Lotus,13,5\n"
     result = import_csv(conn, _write(tmp_path, text), dry_run=True)
     assert result.ok and any("Paper Rexx" in w and "Paper Rex" in w for w in result.warnings)
 
 
 def test_existing_team_is_reused_case_insensitively(conn, tmp_path):
     existing = db.upsert_team(conn, "Paper Rex", vlr_id=5)
-    import_csv(conn, _write(tmp_path, HEADER + "1,2026-10-07,paper rex,LOUD,1,Cup,1,Lotus,13,5,\n"))
+    import_csv(conn, _write(tmp_path, HEADER + "1,2026-10-07,paper rex,LOUD,1,Cup,1,Lotus,13,5\n"))
     row = conn.execute("SELECT team1_id FROM matches WHERE vlr_id = 1").fetchone()
     assert row["team1_id"] == existing
     assert conn.execute("SELECT COUNT(*) c FROM teams WHERE name LIKE 'paper rex'").fetchone()["c"] == 1

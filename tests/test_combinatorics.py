@@ -1,15 +1,6 @@
-import math
-
 import pytest
 
-from valpredictor.models.combinatorics import (
-    combine_win_rates,
-    expected_map_probs_from_pool,
-    match_win_probability,
-    p_distance,
-    score_distribution,
-    shared_score_distribution,
-)
+from valpredictor.models.combinatorics import match_win_probability, p_distance, score_distribution
 
 
 def test_bo1_reduces_to_the_map_probability():
@@ -49,58 +40,15 @@ def test_score_distribution_requires_enough_probs():
         score_distribution([0.5, 0.5], best_of=3)
 
 
-def test_combine_win_rates_is_symmetric_at_half():
-    assert combine_win_rates(0.5, 0.5) == pytest.approx(0.5)
-
-
-def test_combine_win_rates_favors_higher_rate():
-    assert combine_win_rates(0.7, 0.3) > 0.5
-    assert combine_win_rates(0.3, 0.7) < 0.5
-    a = combine_win_rates(0.7, 0.3)
-    b = combine_win_rates(0.3, 0.7)
-    assert a == pytest.approx(1 - b)
-
-
-def test_shared_strength_with_zero_tau_is_independence():
-    probs = [0.6, 0.5, 0.55]
-    assert shared_score_distribution(probs, 3, 0.0) == score_distribution(probs, 3)
-
-
-def test_shared_strength_preserves_each_maps_marginal_probability():
-    # in a Bo1 the series outcome IS the map outcome, so the marginal must come back unchanged
-    for p in (0.3, 0.5, 0.62, 0.8):
-        for tau in (0.3, 0.8, 1.5):
-            dist = shared_score_distribution([p], 1, tau)
-            assert dist[(1, 0)] == pytest.approx(p, abs=1e-6)
-
-
-def test_shared_strength_makes_sweeps_likelier_and_deciders_rarer():
-    probs = [0.6, 0.6, 0.6]
-    independent = score_distribution(probs, 3)
-    shared = shared_score_distribution(probs, 3, 0.8)
-    assert sum(shared.values()) == pytest.approx(1.0)
-    assert shared[(2, 0)] > independent[(2, 0)]
-    assert shared[(0, 2)] > independent[(0, 2)]
-    assert p_distance(shared, 3) < p_distance(independent, 3)
-    # the favourite is still favoured, and the exact-score ranking is unchanged
-    assert match_win_probability(probs, 3, 0.8) > 0.5
-
-
-def test_shared_strength_is_antisymmetric():
-    a = shared_score_distribution([0.58, 0.45, 0.52], 3, 0.7)
-    b = shared_score_distribution([0.42, 0.55, 0.48], 3, 0.7)  # same series seen from the other team
-    for (x, y), p in a.items():
-        assert b[(y, x)] == pytest.approx(p, abs=1e-9)
+def test_the_favourite_most_likely_wins_2_0_and_the_score_is_antisymmetric():
+    ab = score_distribution([0.6] * 3, 3)
+    ba = score_distribution([0.4] * 3, 3)
+    assert max(ab, key=ab.get) == (2, 0)
+    for (x, y), p in ab.items():
+        assert ba[(y, x)] == pytest.approx(p)
 
 
 def test_p_distance():
     assert p_distance(score_distribution([0.5, 0.5, 0.5], 3), 3) == pytest.approx(0.5)  # 2-1 + 1-2
     assert p_distance(score_distribution([0.5] * 5, 5), 5) == pytest.approx(0.375)       # 3-2 + 2-3
     assert p_distance(score_distribution([0.7], 1), 1) is None
-
-
-def test_expected_map_probs_from_pool_repeats_combined_rate():
-    probs = expected_map_probs_from_pool(0.6, 0.5, best_of=3)
-    assert len(probs) == 3
-    assert all(p == pytest.approx(probs[0]) for p in probs)
-    assert probs[0] == pytest.approx(combine_win_rates(0.6, 0.5))

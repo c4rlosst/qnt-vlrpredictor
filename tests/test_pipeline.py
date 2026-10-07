@@ -38,14 +38,14 @@ def test_refresh_retrains_and_returns_fresh_state(tmp_path):
     conn = make_league_db(tmp_path / "t.db")
     stages = []
     result = pipeline.refresh(
-        conn, FakeVLR(), tmp_path / "model.txt", tmp_path / "table.parquet",
+        conn, FakeVLR(), tmp_path / "model.json",
         progress=lambda step, msg: stages.append(step), since=SINCE,
     )
     assert result.trained and result.model is not None and result.state is not None
     assert result.new_matches == 0 and result.maps >= pipeline.MIN_MAPS_TO_TRAIN
-    assert (tmp_path / "model.txt").exists() and (tmp_path / "table.parquet").exists()
-    assert result.latest_match_date == dt.date.today().isoformat() or result.latest_match_date
-    assert {"scrape", "features", "train"} <= set(stages)
+    assert (tmp_path / "model.json").exists()
+    assert result.latest_match_date
+    assert {"scrape", "train"} <= set(stages)
 
 
 def test_refresh_stores_new_matches_but_declines_to_train_on_too_little_data(tmp_path):
@@ -54,11 +54,11 @@ def test_refresh_stores_new_matches_but_declines_to_train_on_too_little_data(tmp
         results_html=(FIXTURES / "results_page.html").read_text(encoding="utf-8"),
         match_html=(FIXTURES / "match_detail.html").read_text(encoding="utf-8"),
     )
-    result = pipeline.refresh(conn, client, tmp_path / "m.txt", tmp_path / "t.parquet", since=SINCE)
+    result = pipeline.refresh(conn, client, tmp_path / "m.json", since=SINCE)
     assert result.new_matches == 3 and result.total_matches == 3
     assert not result.trained and result.model is None
     assert "need at least" in result.message
-    assert not (tmp_path / "m.txt").exists()
+    assert not (tmp_path / "m.json").exists()
 
 
 def test_default_since_resumes_just_before_the_newest_match(tmp_path):
@@ -91,7 +91,7 @@ def _wait_for(predicate, timeout=30.0):
 def test_app_refresh_runs_in_background_one_at_a_time_and_swaps_in_the_model(tmp_path):
     BlockingClient.gate = threading.Event()
     make_league_db(tmp_path / "t.db")
-    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "t_map_model.txt", client_factory=BlockingClient)
+    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "t_elo_model.json", client_factory=BlockingClient)
 
     assert app.status()["has_model"] is False and app.status()["refresh"]["state"] == "idle"
     assert app.start_refresh() is True
@@ -103,21 +103,21 @@ def test_app_refresh_runs_in_background_one_at_a_time_and_swaps_in_the_model(tmp
     status = app.status()
     assert status["has_model"] is True and app.model is not None
     assert status["model_trained_at"] is not None and status["maps"] >= pipeline.MIN_MAPS_TO_TRAIN
-    assert "retrained" in status["refresh"]["message"]
+    assert "refit" in status["refresh"]["message"]
     assert app.start_refresh() is True  # free again afterwards
     assert _wait_for(lambda: app.status()["refresh"]["state"] in ("done", "error"))
 
 
 def test_predict_without_a_model_explains_what_to_do(tmp_path):
     make_league_db(tmp_path / "t.db")
-    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "m.txt", client_factory=FakeVLR)
+    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "m.json", client_factory=FakeVLR)
     with pytest.raises(ValueError, match="Refresh data"):
         app.predict({"team1": "Team 0", "team2": "Team 1"})
 
 
 def test_http_endpoints_and_cross_site_post_protection(tmp_path):
     make_league_db(tmp_path / "t.db")
-    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "m.txt", client_factory=FakeVLR)
+    app = App(tmp_path / "t.db", model=None, model_path=tmp_path / "m.json", client_factory=FakeVLR)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(app))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"

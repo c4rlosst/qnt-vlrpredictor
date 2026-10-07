@@ -20,7 +20,6 @@ def make_league_db(path, n_matches: int = 120, seed: int = 7):
             conn, vlr_id=n + 1, match_url=f"/{n + 1}/x", event_id=None,
             unix_timestamp_ms=int(dt.datetime.combine(day, dt.time(12), tzinfo=dt.timezone.utc).timestamp() * 1000),
             team1_id=teams[a], team2_id=teams[b], best_of=3, team1_score=None, team2_score=None,
-            is_international=False,
         )
         rows, wa, wb = [], 0, 0
         for order, name in enumerate(rng.sample(LEAGUE_MAPS, 3), start=1):
@@ -28,8 +27,7 @@ def make_league_db(path, n_matches: int = 120, seed: int = 7):
                 break
             a_wins = rng.random() < 1 / (1 + 2.718 ** -(skills[a] - skills[b]))
             rows.append({"map_order": order, "map_name": name, "team1_score": 13 if a_wins else 8,
-                         "team2_score": 8 if a_wins else 13, "team1_id": teams[a], "team2_id": teams[b],
-                         "picked_by_team_id": teams[a] if order == 1 else None})
+                         "team2_score": 8 if a_wins else 13, "team1_id": teams[a], "team2_id": teams[b]})
             wa, wb = wa + a_wins, wb + (not a_wins)
         db.replace_maps(conn, mid, rows)
     conn.commit()

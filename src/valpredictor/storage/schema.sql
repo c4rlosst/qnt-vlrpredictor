@@ -16,8 +16,7 @@ CREATE TABLE IF NOT EXISTS players (
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     vlr_id INTEGER UNIQUE,
-    name TEXT,
-    is_international INTEGER  -- 0/1/NULL (event-name heuristic: Masters/Champions/EWC)
+    name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS matches (
@@ -33,7 +32,6 @@ CREATE TABLE IF NOT EXISTS matches (
     team1_score INTEGER,      -- maps won
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
-    is_international INTEGER,
     scraped_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(match_date);
@@ -48,11 +46,6 @@ CREATE TABLE IF NOT EXISTS maps (
     team1_score INTEGER,
     team2_score INTEGER,
     winner_team_id INTEGER REFERENCES teams(id),
-    picked_by_team_id INTEGER REFERENCES teams(id),  -- NULL => decider
-    -- side data (NULL when unknown); see db._MAP_SIDE_COLUMNS, which adds these to older databases
-    team1_start_side TEXT,    -- 'atk' | 'def': the side team1 started the map on
-    team1_atk_won INTEGER, team1_def_won INTEGER, team1_ot_won INTEGER,
-    team2_atk_won INTEGER, team2_def_won INTEGER, team2_ot_won INTEGER,
     UNIQUE(match_id, map_order)
 );
 CREATE INDEX IF NOT EXISTS idx_maps_match ON maps(match_id);
@@ -66,9 +59,3 @@ CREATE TABLE IF NOT EXISTS rosters (
 );
 CREATE INDEX IF NOT EXISTS idx_rosters_match ON rosters(match_id);
 CREATE INDEX IF NOT EXISTS idx_rosters_team ON rosters(team_id);
-
--- key/value store (reserved for resumable-run bookkeeping)
-CREATE TABLE IF NOT EXISTS scrape_state (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
