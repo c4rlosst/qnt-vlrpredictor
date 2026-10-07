@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import lightgbm as lgb
 
 from valpredictor.features.build_features import ReplayState, replay
+from valpredictor.market import implied_team1_probability
 from valpredictor.models.predict import TeamNotFoundError, predict_match
 from valpredictor.scraping.client import VLRClient
 from valpredictor.scraping.parsers import MatchDetail, ResultRow, parse_match_detail, parse_results_page
@@ -21,19 +22,29 @@ class UpcomingPrediction:
     detail: MatchDetail | None = None
     result: dict | None = None
     note: str | None = None  # why there is no prediction (TBD teams, unknown team, ...)
+    market: dict | None = None  # bookmaker pre-match line, for reference only
+    veto_posted: bool = False  # True -> predicted from the actual maps and picks, False -> simulated veto
 
 
 def veto_to_maps(detail: MatchDetail) -> tuple[list[str], dict[str, str]]:
-    """Ordered play list + {map: picker} from the veto note. Empty when the
-    veto is still in progress (fewer maps than the series length)."""
+    """Ordered play list + {map: picker's team name} from the veto note. Empty
+    when the veto is still in progress (fewer maps than the series length).
+    The veto text names teams by tag ('PRX'); those are resolved to full names."""
+    names = {1: detail.team1_name, 2: detail.team2_name}
     maps, picks = [], {}
     for step in detail.veto:
         if step.action == "pick":
             maps.append(step.map_name)
             if step.team:
-                picks[step.map_name] = step.team
+                picks[step.map_name] = names.get(detail.veto_actors.get(step.team)) or step.team
     maps += [s.map_name for s in detail.veto if s.action == "remains"]
     return (maps, picks) if detail.best_of and len(maps) == detail.best_of else ([], {})
+
+
+def pre_match_market(detail: MatchDetail) -> dict | None:
+    """The bookmakers' pre-match line as a margin-free probability, to compare the model with."""
+    line = implied_team1_probability(detail.odds, "pre-match")
+    return None if line is None else {"team1": line[0], "team2": 1.0 - line[0], "books": line[1]}
 
 
 def predict_upcoming(
@@ -67,5 +78,9 @@ def predict_upcoming(
         except TeamNotFoundError as exc:
             out.append(UpcomingPrediction(row=r, detail=detail, note=str(exc)))
             continue
-        out.append(UpcomingPrediction(row=r, detail=detail, result=result))
+        out.append(
+            UpcomingPrediction(
+                row=r, detail=detail, result=result, market=pre_match_market(detail), veto_posted=bool(maps)
+            )
+        )
     return out

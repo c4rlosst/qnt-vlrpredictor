@@ -24,21 +24,22 @@ and 60%, a Bo3 is 2-0 27.5% and 2-1 30%, so a 57.5% match win. Real maps in a se
 (one team's true strength is shared), so each series also gets one common strength shock (sd 0.6),
 which makes sweeps a little likelier. The page shows the chance of a deciding map.
 
-**4. Before the veto.** We simulate it for both possible first bans (each team bans its worst map and
-picks its best) and average the two series. Every prediction is computed from both teams' sides, so
-A vs B is exactly 1 minus B vs A.
+**4. The veto.** Once the veto is posted we predict from the real maps and who picked them (the page
+watches for it and switches over). Before that we simulate it for both possible first bans (each team
+bans its worst map and picks its best) and average the two series. Every prediction is computed from
+both teams' sides, so A vs B is exactly 1 minus B vs A. The page also shows the bookmakers' pre-match
+line for reference. Predictions are meant to be made before the game starts; the score is never used.
 
 ## Checking it
 
 On a full season (about 2,000 maps) the model scores ~55% per map and **statistically ties plain Elo**
 (log-loss 0.687 vs 0.685); no extra feature group beat Elo with confidence. Tested on their own:
 - starting side: team that started on attack won 48.6% vs 49.8% expected (-1.2% +/- 1.7%)
-- agent compositions, even the ones actually played: -0.001 +/- 0.001 log-loss vs Elo
 - stage: favourites beat expectation by +4.1% +/- 1.8% in the regular season but -2.5% +/- 2.0% in
   playoffs; a third Bo3 map happens 42% (regular season) vs 47% (playoffs); 46.7% +/- 2.3% overall
 - each map's attack/defence balance varies a lot (attackers win ~55% on Abyss, ~45% on Ascent)
 
-Scripts: `analyze_start_side.py`, `analyze_comps.py`, `analyze_stage.py`, `compare_variants.py`,
+Scripts: `analyze_start_side.py`, `analyze_stage.py`, `compare_variants.py`,
 `fit_series_tau.py`, `check_series_calibration.py`.
 
 ## Limits

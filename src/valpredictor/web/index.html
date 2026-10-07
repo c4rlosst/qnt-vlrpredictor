@@ -88,7 +88,9 @@
     <div id="result" class="hidden"></div>
   </div>
 
-  <h2>Live bracket <button id="refresh" class="secondary" style="margin-left:8px;padding:4px 10px">Refresh</button></h2>
+  <h2>Upcoming matches <button id="refresh" class="secondary" style="margin-left:8px;padding:4px 10px">Refresh</button>
+    <label class="check" style="display:inline-flex;margin-left:12px;font-weight:400"><input id="auto" type="checkbox" checked>
+      Watch for the veto (re-checks every 2 min)</label></h2>
   <div id="upcoming" class="grid"><div class="panel">Loading schedule…</div></div>
 
   <footer>Predictions are model estimates, not betting advice. Data © vlr.gg. Live matches are predicted pre-match and ignore the current score.</footer>
@@ -259,29 +261,43 @@ async function predict() {
   } finally { $("go").disabled = false; }
 }
 
-async function loadUpcoming(force) {
+async function loadUpcoming(force, quiet) {
   const box = $("upcoming");
-  box.replaceChildren(el("div", { class: "panel", text: "Fetching the live schedule from vlr.gg…" }));
+  if (!quiet) box.replaceChildren(el("div", { class: "panel", text: "Fetching the schedule from vlr.gg…" }));
   $("refresh").disabled = true;
   try {
     const items = await api("/api/upcoming?event=Champions" + (force ? "&refresh=1" : ""));
     box.replaceChildren();
-    if (!items.length) box.append(el("div", { class: "panel", text: "No upcoming or live Champions matches on the schedule." }));
+    if (!items.length) box.append(el("div", { class: "panel", text: "No upcoming Champions matches on the schedule." }));
     for (const m of items) {
+      const started = m.status === "live";
+      const basis = m.veto_posted ? "veto posted: predicted from the real maps and picks" : "veto not posted yet: simulated veto";
       const head = el("div", { class: "card-head" },
         el("span", { text: `${m.date || ""} ${m.time || ""} · ${m.series || ""}` }),
-        el("span", {}, m.status === "live" ? el("span", { class: "pill live", text: "LIVE" }) : el("span", { class: "pill", text: m.status || "" }), " ",
+        el("span", {}, started ? el("span", { class: "pill live", text: "STARTED" }) : el("span", { class: "pill", text: m.status || "" }), " ",
           el("a", { href: m.url, target: "_blank", rel: "noopener", text: "vlr.gg" })));
-      const body = m.prediction
-        ? el("div", {}, probBar(m.team1, m.team2, m.prediction.team1_win_prob),
-            el("p", { class: "meta", text: `Bo${m.prediction.best_of} · ${m.prediction.mode}` }))
-        : el("div", {}, el("div", { class: "names" }, el("span", { text: m.team1 }), el("span", { text: m.team2 })),
-            el("p", { class: "meta", text: m.note || "" }));
+      let body;
+      if (m.prediction) {
+        const lines = [`Bo${m.prediction.best_of} · ${basis}`];
+        if (m.market) lines.push(`Bookmaker pre-match line: ${m.team1} ${pct(m.market.team1)} / ${m.team2} ${pct(m.market.team2)}`);
+        if (started) lines.push("Already started: this is the pre-game estimate, the score is not used.");
+        body = el("div", {}, probBar(m.team1, m.team2, m.prediction.team1_win_prob),
+          ...lines.map((t) => el("p", { class: "meta", text: t })));
+      } else {
+        body = el("div", {}, el("div", { class: "names" }, el("span", { text: m.team1 }), el("span", { text: m.team2 })),
+          el("p", { class: "meta", text: m.note || "" }));
+      }
       const card = el("div", { class: "panel" }, head, body);
       if (m.prediction) {
-        const fill = () => { $("team1").value = m.team1; $("team2").value = m.team2; $("best_of").value = String(m.prediction.best_of); window.scrollTo({ top: 0, behavior: "smooth" }); predict(); };
+        const show = () => {
+          $("team1").value = m.team1; $("team2").value = m.team2; $("best_of").value = String(m.prediction.best_of);
+          $("error").classList.add("hidden");
+          $("result").replaceChildren(renderPrediction(m.prediction));
+          $("result").classList.remove("hidden");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        };
         card.style.cursor = "pointer"; card.title = "Click for the full breakdown";
-        card.addEventListener("click", (ev) => { if (ev.target.tagName !== "A") fill(); });
+        card.addEventListener("click", (ev) => { if (ev.target.tagName !== "A") show(); });
       }
       box.append(card);
     }
@@ -297,6 +313,8 @@ for (const id of ["team1", "team2", "maps"]) $(id).addEventListener("keydown", (
 loadTeams().catch((e) => { $("error").textContent = e.message; $("error").classList.remove("hidden"); });
 pollStatus();
 loadUpcoming(false);
+// keep watching: once a veto is posted the card switches from the simulated veto to the real maps and picks
+setInterval(() => { if ($("auto").checked && !document.hidden) loadUpcoming(false, true); }, 120000);
 </script>
 </body>
 </html>

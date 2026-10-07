@@ -185,6 +185,8 @@ class App:
                     "team1": r.team1_name,
                     "team2": r.team2_name,
                     "note": it.note,
+                    "veto_posted": it.veto_posted,
+                    "market": it.market,
                     "prediction": result_to_json(it.result) if it.result else None,
                 }
             )

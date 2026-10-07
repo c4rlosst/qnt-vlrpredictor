@@ -45,12 +45,10 @@ def event_matches(name: str | None, include: re.Pattern | None, exclude: re.Patt
 
 def _side_columns(m) -> dict:
     """Flatten a parsed map's per-team side data into maps-table columns."""
-    out = {"team1_comp": m.team1_comp, "team2_comp": m.team2_comp}
     s1, s2 = m.team1_sides, m.team2_sides
     if s1 is None or s2 is None:
-        return out
+        return {}
     return {
-        **out,
         "team1_start_side": s1.first_side,
         "team1_atk_won": s1.atk_won, "team1_def_won": s1.def_won, "team1_ot_won": s1.ot_won,
         "team2_atk_won": s2.atk_won, "team2_def_won": s2.def_won, "team2_ot_won": s2.ot_won,

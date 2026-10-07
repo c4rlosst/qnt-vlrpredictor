@@ -23,7 +23,6 @@ _MAP_SIDE_COLUMNS = (
     ("team1_start_side", "TEXT"),
     ("team1_atk_won", "INTEGER"), ("team1_def_won", "INTEGER"), ("team1_ot_won", "INTEGER"),
     ("team2_atk_won", "INTEGER"), ("team2_def_won", "INTEGER"), ("team2_ot_won", "INTEGER"),
-    ("team1_comp", "TEXT"), ("team2_comp", "TEXT"),  # five agents, sorted, comma-joined
 )
 
 
@@ -192,16 +191,14 @@ def replace_maps(conn: sqlite3.Connection, match_id: int, maps: list[dict]) -> N
             INSERT INTO maps (match_id, map_order, map_name, team1_score, team2_score,
                                winner_team_id, picked_by_team_id, team1_start_side,
                                team1_atk_won, team1_def_won, team1_ot_won,
-                               team2_atk_won, team2_def_won, team2_ot_won,
-                               team1_comp, team2_comp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               team2_atk_won, team2_def_won, team2_ot_won)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 match_id, m["map_order"], m.get("map_name"), s1, s2,
                 winner_team_id, m.get("picked_by_team_id"), m.get("team1_start_side"),
                 m.get("team1_atk_won"), m.get("team1_def_won"), m.get("team1_ot_won"),
                 m.get("team2_atk_won"), m.get("team2_def_won"), m.get("team2_ot_won"),
-                m.get("team1_comp"), m.get("team2_comp"),
             ),
         )
 

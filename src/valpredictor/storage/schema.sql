@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS maps (
     team1_start_side TEXT,    -- 'atk' | 'def': the side team1 started the map on
     team1_atk_won INTEGER, team1_def_won INTEGER, team1_ot_won INTEGER,
     team2_atk_won INTEGER, team2_def_won INTEGER, team2_ot_won INTEGER,
-    team1_comp TEXT, team2_comp TEXT,   -- the five agents played, sorted and comma-joined
     UNIQUE(match_id, map_order)
 );
 CREATE INDEX IF NOT EXISTS idx_maps_match ON maps(match_id);

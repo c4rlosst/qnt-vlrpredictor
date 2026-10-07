@@ -163,8 +163,15 @@ class MapResult:
     picked_by: int | None  # 1 or 2 for the picking team; None for the decider
     team1_sides: TeamSides | None = None
     team2_sides: TeamSides | None = None
-    team1_comp: str | None = None  # the five agents played, sorted and comma-joined, e.g. "fade,jett,omen,sova,viper"
-    team2_comp: str | None = None
+
+
+@dataclass
+class OddsLine:
+    """One bookmaker's decimal odds for the two teams, as vlr.gg lists them."""
+
+    kind: str  # "pre-match" | "live"
+    team1_odds: float
+    team2_odds: float
 
 
 @dataclass
@@ -183,10 +190,27 @@ class MatchDetail:
     is_international: bool | None = None
     event_tier: int | None = None  # see valpredictor.stage
     stakes: int | None = None
+    odds: list[OddsLine] = field(default_factory=list)
     veto: list[VetoStep] = field(default_factory=list)
+    veto_actors: dict[str, int] = field(default_factory=dict)  # veto label ('PRX') -> team 1 or 2
     maps: list[MapResult] = field(default_factory=list)
     team1_lineup: list[tuple[str, int | None]] = field(default_factory=list)
     team2_lineup: list[tuple[str, int | None]] = field(default_factory=list)
+
+
+def _parse_odds(soup: BeautifulSoup) -> list[OddsLine]:
+    lines = []
+    for item in soup.select(".match-bet-item"):
+        o1 = item.select_one(".match-bet-item-odds.mod-1")
+        o2 = item.select_one(".match-bet-item-odds.mod-2")
+        note = (_text(item.select_one(".match-bet-item-note")) or "").lower()
+        try:
+            a, b = float(_text(o1)), float(_text(o2))
+        except (TypeError, ValueError):
+            continue
+        if a > 1.0 and b > 1.0 and note in ("pre-match", "live"):
+            lines.append(OddsLine(kind=note, team1_odds=a, team2_odds=b))
+    return lines
 
 
 def parse_veto(note: str | None) -> list[VetoStep]:
@@ -227,21 +251,6 @@ def _parse_lineups(soup: BeautifulSoup) -> tuple[list, list]:
     return lineups[0], lineups[1]
 
 
-def _parse_comps(game: Tag) -> tuple[str | None, str | None]:
-    """Each team's five agents on one map, from the per-map player tables
-    (first table = team 1). None unless exactly five agents are listed."""
-    comps: list[str | None] = []
-    for table in game.select(".ovw-table")[:2]:
-        agents = []
-        for row in table.select(".ovw-row:not(.mod-head)"):
-            img = row.select_one(".ovw-cell.mod-agents img[alt]")
-            if img is not None and img.get("alt"):
-                agents.append(img["alt"].strip().lower())
-        comps.append(",".join(sorted(agents)) if len(agents) == 5 else None)
-    comps += [None] * (2 - len(comps))
-    return comps[0], comps[1]
-
-
 def _parse_team_sides(team_div: Tag) -> TeamSides | None:
     won = {"mod-t": 0, "mod-ct": 0, "mod-ot": 0}
     first_side = None
@@ -258,14 +267,40 @@ def _parse_team_sides(team_div: Tag) -> TeamSides | None:
     return TeamSides(first_side=first_side, atk_won=won["mod-t"], def_won=won["mod-ct"], ot_won=won["mod-ot"])
 
 
-def _parse_maps(soup: BeautifulSoup, veto: list[VetoStep], team1: str | None, team2: str | None) -> list[MapResult]:
-    picked_by_veto: dict[str, int] = {}
-    for step in veto:
-        if step.action == "pick" and step.team:
-            if team1 and step.team.lower() == team1.lower():
-                picked_by_veto[step.map_name.lower()] = 1
-            elif team2 and step.team.lower() == team2.lower():
-                picked_by_veto[step.map_name.lower()] = 2
+def _parse_tags(soup: BeautifulSoup) -> dict[str, str]:
+    """{team name (lowercase): tag} for the two teams, e.g. {'paper rex': 'PRX'}. The veto text
+    names teams by tag, the page header by full name; the odds boxes and round tables list both."""
+    tags: dict[str, str] = {}
+    for half in soup.select(".match-bet-item-half"):
+        name = _text(half.select_one(".match-bet-item-team-name"))
+        tag = _text(half.select_one(".match-bet-item-team-tag"))
+        if name and tag:
+            tags[name.lower()] = tag
+    for el_ in soup.select(".vlr-rounds-tag[title]"):
+        title, tag = el_.get("title"), _text(el_)
+        if title and tag:
+            tags.setdefault(title.lower(), tag)
+    return tags
+
+
+def resolve_veto_actors(
+    veto: list[VetoStep], team1: str | None, team2: str | None, tags: dict[str, str]
+) -> dict[str, int]:
+    """Map each team label used in the veto text ('PRX', 'LOUD') to team 1 or 2.
+    Matches on the full name or the tag; when only one of the two labels resolves,
+    the other must be the remaining team."""
+    labels = {1: {team1 or "", tags.get((team1 or "").lower(), "")}, 2: {team2 or "", tags.get((team2 or "").lower(), "")}}
+    labels = {k: {x.lower() for x in v if x} for k, v in labels.items()}
+    actors = list(dict.fromkeys(s.team for s in veto if s.team))
+    resolved = {a: team for a in actors for team, names in labels.items() if a.lower() in names}
+    unresolved = [a for a in actors if a not in resolved]
+    if len(unresolved) == 1 and len(set(resolved.values())) == 1:
+        resolved[unresolved[0]] = 3 - next(iter(resolved.values()))
+    return resolved
+
+
+def _parse_maps(soup: BeautifulSoup, veto: list[VetoStep], actors: dict[str, int]) -> list[MapResult]:
+    picked_by_veto = {s.map_name.lower(): actors[s.team] for s in veto if s.action == "pick" and s.team in actors}
 
     maps: list[MapResult] = []
     games = [g for g in soup.select(".vm-stats-game[data-game-id]") if g.get("data-game-id") != "all"]
@@ -297,12 +332,10 @@ def _parse_maps(soup: BeautifulSoup, veto: list[VetoStep], team1: str | None, te
             sides = [None, None]
         sides += [None] * (2 - len(sides))
 
-        comp1, comp2 = _parse_comps(game)
         maps.append(
             MapResult(
                 map_order=order, map_name=map_name, team1_score=scores[0], team2_score=scores[1],
                 picked_by=picked_by, team1_sides=sides[0], team2_sides=sides[1],
-                team1_comp=comp1, team2_comp=comp2,
             )
         )
     return maps
@@ -350,6 +383,8 @@ def parse_match_detail(html: str, vlr_match_id: int) -> MatchDetail:
             detail.status = text.lower()
 
     detail.veto = parse_veto(_text(soup.select_one(".match-header-note")))
-    detail.maps = _parse_maps(soup, detail.veto, detail.team1_name, detail.team2_name)
+    detail.veto_actors = resolve_veto_actors(detail.veto, detail.team1_name, detail.team2_name, _parse_tags(soup))
+    detail.maps = _parse_maps(soup, detail.veto, detail.veto_actors)
     detail.team1_lineup, detail.team2_lineup = _parse_lineups(soup)
+    detail.odds = _parse_odds(soup)
     return detail
