@@ -66,6 +66,55 @@ def test_ingest_match_populates_all_tables(conn, client):
     assert sorted(r["name"] for r in roster) == ["Ethan", "brawk", "keiko", "mada", "skuba"]
 
 
+def test_ingest_retries_live_when_the_cache_predates_the_match_finishing(conn):
+    """A match page cached while the match was still live/upcoming must not
+    block ingestion forever once the match has actually finished: the first
+    (cached) fetch comes back non-final, so ingest_match must force a live
+    re-fetch rather than concluding the match is unfinished."""
+    final_html = (FIXTURES / "match_detail.html").read_text(encoding="utf-8")
+    stale_html = re.sub(r"\bfinal\b", "live", final_html, count=1)
+
+    class StaleThenFreshClient:
+        def __init__(self):
+            self.calls: list[tuple[str, bool]] = []
+
+        def get(self, path_or_url: str, force_refresh: bool = False) -> str:
+            self.calls.append((path_or_url, force_refresh))
+            return final_html if force_refresh else stale_html
+
+    client = StaleThenFreshClient()
+    match_id = ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)
+
+    assert match_id is not None
+    assert client.calls == [(MATCH_URL, False), (MATCH_URL, True)]  # cached first, then forced live
+    row = conn.execute("SELECT team1_score, team2_score FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert (row["team1_score"], row["team2_score"]) == (2, 0)
+
+
+def test_ingest_does_not_retry_when_the_cache_is_already_final(conn, client):
+    """The common case (page cached after the match finished) must not pay for
+    an extra live request."""
+    ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)
+    assert client.calls == [MATCH_URL]  # one fetch only
+
+
+def test_ingest_still_skips_a_match_thats_genuinely_unfinished(conn):
+    live_html = re.sub(r"\bfinal\b", "live", (FIXTURES / "match_detail.html").read_text(encoding="utf-8"), count=1)
+
+    class AlwaysLiveClient:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, path_or_url: str, force_refresh: bool = False) -> str:
+            self.calls.append((path_or_url, force_refresh))
+            return live_html
+
+    client = AlwaysLiveClient()
+    assert ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL) is None
+    assert client.calls == [(MATCH_URL, False), (MATCH_URL, True)]  # retried once, still not final
+    assert conn.execute("SELECT COUNT(*) c FROM matches").fetchone()["c"] == 0
+
+
 def test_ingest_match_is_idempotent(conn, client):
     first = ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)
     second = ingest.ingest_match(conn, client, vlr_match_id=754732, match_url=MATCH_URL)

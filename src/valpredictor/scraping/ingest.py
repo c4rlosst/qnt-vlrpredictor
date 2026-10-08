@@ -52,6 +52,10 @@ def ingest_match(conn: sqlite3.Connection, client: VLRClient, vlr_match_id: int,
 
     try:
         detail = fetch_match_detail(client, vlr_match_id, match_url)
+        if detail.status != "final":
+            # the cached page may predate the match finishing (fetched while it was
+            # still upcoming/live); re-check live before concluding it's unfinished
+            detail = fetch_match_detail(client, vlr_match_id, match_url, force_refresh=True)
     except FetchError as exc:
         logger.warning("failed to fetch match %d: %s", vlr_match_id, exc)
         return None
